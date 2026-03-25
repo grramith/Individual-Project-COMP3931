@@ -13,6 +13,9 @@ def train_baseline_regressors():
     y_val = np.load("data/modeling/y_val_returns.npy")
     y_test = np.load("data/modeling/y_test_returns.npy")
 
+    X_train_full = np.vstack([X_train, X_val])
+    y_train_full = np.concatenate([y_train, y_val])
+
     param_grids = {
         "Linear_Regression": {
             "model_class": LinearRegression,
@@ -43,7 +46,6 @@ def train_baseline_regressors():
         }
     }
 
-    best_configs = {}
     results = {}
 
     for model_name, config in param_grids.items():
@@ -61,23 +63,19 @@ def train_baseline_regressors():
                 best_mae = val_mae
                 best_params = params
 
-        best_configs[model_name] = {
-            "best_val_mae": best_mae,
-            "best_params": best_params
-        }
-
-        best_model = config["model_class"](**best_params)
-        best_model.fit(X_train, y_train)
-        test_preds = best_model.predict(X_test)
+        final_model = config["model_class"](**best_params)
+        final_model.fit(X_train_full, y_train_full)
+        test_preds = final_model.predict(X_test)
 
         results[model_name] = {
+            "best_params": best_params,
             "val_mae": best_mae,
             "test_mae": mean_absolute_error(y_test, test_preds),
             "test_rmse": mean_squared_error(y_test, test_preds) ** 0.5,
             "test_r2": r2_score(y_test, test_preds)
         }
 
-    print("Baseline evaluation complete")
+    print("Final baseline models trained on train + val")
     print(results)
 
 if __name__ == "__main__":
