@@ -1,5 +1,8 @@
 import numpy as np
 import os
+import json
+import joblib
+from datetime import datetime
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
@@ -15,6 +18,9 @@ def train_baseline_regressors():
 
     X_train_full = np.vstack([X_train, X_val])
     y_train_full = np.concatenate([y_train, y_val])
+
+    os.makedirs("models/baselines", exist_ok=True)
+    os.makedirs("data/results", exist_ok=True)
 
     param_grids = {
         "Linear_Regression": {
@@ -67,6 +73,8 @@ def train_baseline_regressors():
         final_model.fit(X_train_full, y_train_full)
         test_preds = final_model.predict(X_test)
 
+        joblib.dump(final_model, f"models/baselines/{model_name}.pkl")
+
         results[model_name] = {
             "best_params": best_params,
             "val_mae": best_mae,
@@ -75,8 +83,17 @@ def train_baseline_regressors():
             "test_r2": r2_score(y_test, test_preds)
         }
 
-    print("Final baseline models trained on train + val")
-    print(results)
+    with open("data/results/baselines_summary.json", "w") as f:
+        json.dump(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "results": results
+            },
+            f,
+            indent=2
+        )
+
+    print("Saved baseline models and summary results")
 
 if __name__ == "__main__":
     train_baseline_regressors()
