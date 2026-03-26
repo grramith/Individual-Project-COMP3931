@@ -60,8 +60,8 @@ def train_baseline_regressors():
     results = []
     tuning_logs = []
 
-    print(f"Training & Tuning Baseline Regressors...")
-    print("=" * 70)
+    print(f"Training & Tuning Baseline Regressors")
+    print("-" * 70)
 
     # Train linear regression without tuning as a baseline check
     lr = baselines["Linear_Regression"]
@@ -87,7 +87,7 @@ def train_baseline_regressors():
 
     # Loop through each model and perform simple validation-based tuning
     for model_name, config in param_grids.items():
-        print(f"\nTuning {model_name}...")
+        print(f"\nTuning {model_name}")
         best_val_mae = float('inf')
         best_model = None
         best_params = None
