@@ -1,193 +1,196 @@
-import json
-import os
-
-import joblib
 import numpy as np
 import pandas as pd
+import joblib
+import os
+import json
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import torch
-import torch.nn as nn
-from sklearn.metrics import mean_absolute_error
 
 
-class LSTMRegressor(nn.Module):
-    def __init__(self, input_size, hidden_size=64, num_layers=2, dropout=0.3):
-        super().__init__()
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0,
-        )
-        self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(hidden_size, 1)
-
-    def forward(self, x):
-        lstm_out, _ = self.lstm(x)
-        last_hidden = lstm_out[:, -1, :]
-        return self.fc(self.dropout(last_hidden)).squeeze(-1)
-
-
+# Dynamic ensemble prediction engine for HDE
+# This combines the RF, GB, and LSTM predictions using rolling performance
 def compute_ensemble_predictions(
-    metadata,
-    X_data,
-    y_data,
-    rf,
-    gb,
-    lstm_preds,
-    lstm_meta,
-    window=10,
-    decay=0.95,
-    weight_smooth_alpha=0.15,
+    metadata, X_data, y_data, rf, gb,
+    lstm_preds, lstm_meta,
+    window=10, decay=0.95, weight_smooth_alpha=0.15
 ):
+    """
+    Dynamic ensemble with exponentially-decayed weighting, directional-accuracy
+    scoring, rolling bias correction, and EMA weight smoothing.
+
+    Parameters are as follows:
+
+    window : int
+        Rolling window length for error history.
+    decay : float
+        Exponential decay factor (0 < decay <= 1). Values < 1 down-weight
+        older observations so the ensemble reacts faster to regime shifts.
+        decay=1.0 reduces to a uniform rolling average.
+    weight_smooth_alpha : float
+        EMA alpha for weight smoothing. Larger values track changes faster
+        but make the weights noisier.
+    """
+
     eps = 1e-6
 
+    # Start from the metadata and attach the true target plus baseline predictions
     meta = metadata.copy()
-    meta["Actual"] = y_data
+    meta["Actual"]  = y_data
     meta["Pred_RF"] = rf.predict(X_data)
     meta["Pred_GB"] = gb.predict(X_data)
 
+     # Align the LSTM predictions back onto the main metadata using Date and Ticker
     if lstm_preds is not None and lstm_meta is not None and len(lstm_preds) > 0:
         lstm_df = lstm_meta.copy()
         lstm_df["Pred_LSTM"] = lstm_preds
         lstm_df["Date"] = pd.to_datetime(lstm_df["Date"])
-        meta["Date"] = pd.to_datetime(meta["Date"])
-        meta = meta.merge(
-            lstm_df[["Date", "Ticker", "Pred_LSTM"]],
-            on=["Date", "Ticker"],
-            how="left",
-        )
+        meta["Date"]    = pd.to_datetime(meta["Date"])
+        meta = meta.merge(lstm_df[["Date", "Ticker", "Pred_LSTM"]],
+                          on=["Date", "Ticker"], how="left")
     else:
+        # If no LSTM predictions are available, fill with NaN so the ensemble
         meta["Pred_LSTM"] = np.nan
 
     final_results = []
 
+    # Run the ensemble separately for each ticker so weights adapt per stock
     for ticker in meta["Ticker"].unique():
-        ticker_df = meta[meta["Ticker"] == ticker].copy().sort_values("Date")
-        n = len(ticker_df)
+        t_df = meta[meta["Ticker"] == ticker].copy().sort_values("Date")
+        n    = len(t_df)
 
-        weight_rf = np.full(n, 1 / 3)
-        weight_gb = np.full(n, 1 / 3)
-        weight_lstm = np.full(n, 1 / 3)
-        ensemble_pred = np.zeros(n)
+        # Store model weights over time
+        w_rf   = np.full(n, 1/3)
+        w_gb   = np.full(n, 1/3)
+        w_lstm = np.full(n, 1/3)
 
-        actual = ticker_df["Actual"].values
-        pred_rf = ticker_df["Pred_RF"].values.copy()
-        pred_gb = ticker_df["Pred_GB"].values.copy()
-        pred_lstm = ticker_df["Pred_LSTM"].values.copy()
+        # Store the final ensemble prediction at each step
+        ens_delta = np.zeros(n)
 
-        smooth_rf, smooth_gb, smooth_lstm = 1 / 3, 1 / 3, 1 / 3
+        act    = t_df["Actual"].values
+        p_rf   = t_df["Pred_RF"].values.copy()
+        p_gb   = t_df["Pred_GB"].values.copy()
+        p_lstm = t_df["Pred_LSTM"].values.copy()
 
-        for i in range(min(window, n)):
-            if np.isnan(pred_lstm[i]):
-                ensemble_pred[i] = 0.5 * pred_rf[i] + 0.5 * pred_gb[i]
+       # Start the smoothed weights at equal values
+        sw_rf, sw_gb, sw_lstm = 1/3, 1/3, 1/3
+
+        # Use a simple equal-weight average during the warm-up period
+        for t in range(min(window, n)):
+            if np.isnan(p_lstm[t]):
+                ens_delta[t] = 0.5 * p_rf[t] + 0.5 * p_gb[t]
             else:
-                ensemble_pred[i] = (pred_rf[i] + pred_gb[i] + pred_lstm[i]) / 3.0
+                ens_delta[t] = (p_rf[t] + p_gb[t] + p_lstm[t]) / 3.0
 
-        for i in range(window, n):
-            decay_weights = np.array([decay ** (window - 1 - j) for j in range(window)])
-            decay_weights /= decay_weights.sum()
+        for t in range(window, n):
+            
+            # Build exponentially decayed weights so recent observations matter more
+            decay_w = np.array([decay ** (window - 1 - i) for i in range(window)])
+            decay_w /= decay_w.sum()
 
-            hist_actual = actual[i - window:i]
-            hist_rf = pred_rf[i - window:i]
-            hist_gb = pred_gb[i - window:i]
+            hist_act = act[t - window : t]
+            hist_rf  = p_rf[t - window : t]
+            hist_gb  = p_gb[t - window : t]
 
-            bias_rf = float(np.dot(decay_weights, hist_rf - hist_actual))
-            bias_gb = float(np.dot(decay_weights, hist_gb - hist_actual))
+            # Estimate recent model bias and remove it from the next prediction
+            bias_rf = float(np.dot(decay_w, hist_rf - hist_act))
+            bias_gb = float(np.dot(decay_w, hist_gb - hist_act))
+            pred_rf_c = p_rf[t] - bias_rf
+            pred_gb_c = p_gb[t] - bias_gb
 
-            pred_rf_corrected = pred_rf[i] - bias_rf
-            pred_gb_corrected = pred_gb[i] - bias_gb
+            # Score each model using both error size and sign accuracy
+            ew_mae_rf  = float(np.dot(decay_w, np.abs(hist_rf - hist_act)))
+            ew_mae_gb  = float(np.dot(decay_w, np.abs(hist_gb - hist_act)))
+            dir_rf     = float(np.dot(decay_w, ((hist_rf > 0) == (hist_act > 0)).astype(float)))
+            dir_gb     = float(np.dot(decay_w, ((hist_gb > 0) == (hist_act > 0)).astype(float)))
+            score_rf   = 0.7 / (ew_mae_rf + eps) + 0.3 * dir_rf
+            score_gb   = 0.7 / (ew_mae_gb + eps) + 0.3 * dir_gb
 
-            mae_rf = float(np.dot(decay_weights, np.abs(hist_rf - hist_actual)))
-            mae_gb = float(np.dot(decay_weights, np.abs(hist_gb - hist_actual)))
-
-            dir_rf = float(
-                np.dot(decay_weights, ((hist_rf > 0) == (hist_actual > 0)).astype(float))
-            )
-            dir_gb = float(
-                np.dot(decay_weights, ((hist_gb > 0) == (hist_actual > 0)).astype(float))
-            )
-
-            score_rf = 0.7 / (mae_rf + eps) + 0.3 * dir_rf
-            score_gb = 0.7 / (mae_gb + eps) + 0.3 * dir_gb
-
-            hist_lstm = pred_lstm[i - window:i]
-
+            # Handle the LSTM separately in case there is still missing sequence history
+            hist_lstm = p_lstm[t - window : t]
             if np.any(np.isnan(hist_lstm)):
-                total_score = score_rf + score_gb
-                raw_rf = score_rf / total_score
-                raw_gb = score_gb / total_score
-                raw_lstm = 0.0
-                pred_lstm_corrected = 0.0
+                total      = score_rf + score_gb
+                raw_rf     = score_rf / total
+                raw_gb     = score_gb / total
+                raw_lstm   = 0.0
+                pred_lstm_c = 0.0
+            
+            # Otherwise include the LSTM in the same scoring logic
             else:
-                bias_lstm = float(np.dot(decay_weights, hist_lstm - hist_actual))
-                pred_lstm_corrected = pred_lstm[i] - bias_lstm
+                bias_lstm   = float(np.dot(decay_w, hist_lstm - hist_act))
+                pred_lstm_c = p_lstm[t] - bias_lstm
+                ew_mae_lstm = float(np.dot(decay_w, np.abs(hist_lstm - hist_act)))
+                dir_lstm    = float(np.dot(decay_w, ((hist_lstm > 0) == (hist_act > 0)).astype(float)))
+                score_lstm  = 0.7 / (ew_mae_lstm + eps) + 0.3 * dir_lstm
+                total       = score_rf + score_gb + score_lstm
+                raw_rf      = score_rf  / total
+                raw_gb      = score_gb  / total
+                raw_lstm    = score_lstm / total
 
-                mae_lstm = float(np.dot(decay_weights, np.abs(hist_lstm - hist_actual)))
-                dir_lstm = float(
-                    np.dot(decay_weights, ((hist_lstm > 0) == (hist_actual > 0)).astype(float))
-                )
-                score_lstm = 0.7 / (mae_lstm + eps) + 0.3 * dir_lstm
+            # Smooth the raw weights so they do not jump around too sharply
+            a = weight_smooth_alpha
+            sw_rf   = (1 - a) * sw_rf   + a * raw_rf
+            sw_gb   = (1 - a) * sw_gb   + a * raw_gb
+            sw_lstm = (1 - a) * sw_lstm + a * raw_lstm
+            sw_sum  = sw_rf + sw_gb + sw_lstm
 
-                total_score = score_rf + score_gb + score_lstm
-                raw_rf = score_rf / total_score
-                raw_gb = score_gb / total_score
-                raw_lstm = score_lstm / total_score
+            w_rf[t]   = sw_rf   / sw_sum
+            w_gb[t]   = sw_gb   / sw_sum
+            w_lstm[t] = sw_lstm / sw_sum
 
-            alpha = weight_smooth_alpha
-            smooth_rf = (1 - alpha) * smooth_rf + alpha * raw_rf
-            smooth_gb = (1 - alpha) * smooth_gb + alpha * raw_gb
-            smooth_lstm = (1 - alpha) * smooth_lstm + alpha * raw_lstm
+            # Combine the bias-corrected model predictions into the final ensemble output
+            ens_delta[t] = (w_rf[t]   * pred_rf_c +
+                            w_gb[t]   * pred_gb_c +
+                            w_lstm[t] * pred_lstm_c)
 
-            weight_sum = smooth_rf + smooth_gb + smooth_lstm
-            weight_rf[i] = smooth_rf / weight_sum
-            weight_gb[i] = smooth_gb / weight_sum
-            weight_lstm[i] = smooth_lstm / weight_sum
+        # Save the weights and ensemble prediction back into the ticker frame
+        t_df["Weight_RF"]     = w_rf
+        t_df["Weight_GB"]     = w_gb
+        t_df["Weight_LSTM"]   = w_lstm
+        t_df["Ensemble_Delta"] = ens_delta
+        final_results.append(t_df)
 
-            ensemble_pred[i] = (
-                weight_rf[i] * pred_rf_corrected
-                + weight_gb[i] * pred_gb_corrected
-                + weight_lstm[i] * pred_lstm_corrected
-            )
-
-        ticker_df["Weight_RF"] = weight_rf
-        ticker_df["Weight_GB"] = weight_gb
-        ticker_df["Weight_LSTM"] = weight_lstm
-        ticker_df["Ensemble_Delta"] = ensemble_pred
-        final_results.append(ticker_df)
-
-    return pd.concat(final_results, ignore_index=True)
+    return pd.concat(final_results)
 
 
-def sharpe_from_signals(
-    results_df,
-    threshold,
-    vix_low,
-    vix_high,
-    use_fractional,
-    allow_short,
-    dd_limit,
-    pos_scale=1.0,
-    tx_cost=0.0005,
-):
+# Simulate trading signals from the ensemble predictions
+def sharpe_from_signals(results_df, threshold, vix_low, vix_high,
+                        use_fractional, allow_short, dd_limit,
+                        pos_scale=1, tx_cost=0.0005):
+    """
+    Simulate a backtest and return the portfolio Sharpe ratio.
+
+    Multi-level VIX regime:
+        VIX <= vix_low   --> low regime  : base threshold
+        vix_low < VIX <= vix_high --> elevated regime : threshold * 1.5
+        VIX > vix_high   --> high regime : threshold * 3.0
+
+    
+    Personal note for Short selling:
+
+        When allow_short=True, take a fractional short when the prediction
+        is strongly negative.
+    """
     all_rets = []
 
+    # Backtest each ticker separately before combining daily portfolio returns
     for ticker in results_df["Ticker"].unique():
-        ticker_df = results_df[results_df["Ticker"] == ticker].copy().sort_values("Date")
-        pred = ticker_df["Ensemble_Delta"].values
-        actual = ticker_df["Actual"].values
-        vix = ticker_df["VIX_Value"].values if "VIX_Value" in ticker_df.columns else np.zeros(len(ticker_df))
-        n = len(ticker_df)
+        t_df  = results_df[results_df["Ticker"] == ticker].copy().sort_values("Date")
+        pred   = t_df["Ensemble_Delta"].values
+        actual = t_df["Actual"].values
+        vix    = t_df["VIX_Value"].values if "VIX_Value" in t_df.columns else np.zeros(len(t_df))
+        n      = len(t_df)
 
-        position = np.zeros(n)
-        equity = [1.0]
-        peak = 1.0
+        position   = np.zeros(n)
+        equity     = [1.0]
+        peak       = 1.0
         strat_rets = np.zeros(n)
 
+        # Use yesterday's prediction to decide today's position
         for i in range(1, n):
-            p = pred[i - 1]
-            v = vix[i - 1]
+            p   = pred[i - 1]
+            v   = vix[i - 1]
 
+            # Increase the threshold in more volatile VIX regimes
             if v > vix_high:
                 eff_threshold = threshold * 3.0
             elif v > vix_low:
@@ -211,214 +214,195 @@ def sharpe_from_signals(
                 else:
                     position[i] = 0.0
 
-            dd = (equity[-1] - peak) / peak if peak > 0 else 0.0
+            # Reduce exposure if the running drawdown breaches the chosen limit
+            dd = (equity[-1] - peak) / peak if peak > 0 else 0
             if dd < -dd_limit:
                 severity = min((abs(dd) - dd_limit) / dd_limit, 1.0)
                 position[i] *= max(1.0 - severity, 0.0)
 
-            pos_change = abs(position[i] - position[i - 1])
-            ret = position[i] * actual[i] - pos_change * tx_cost
+             # Apply transaction costs whenever the position changes
+            pos_change  = abs(position[i] - position[i - 1])
+            ret         = position[i] * actual[i] - pos_change * tx_cost
             strat_rets[i] = ret
 
+            # Update the equity curve and running peak
             equity.append(equity[-1] * (1 + ret))
             peak = max(peak, equity[-1])
 
-        ticker_df["Strategy_Ret"] = strat_rets
-        ticker_df["Position"] = position
-        all_rets.append(ticker_df)
+        # Save the simulated returns and positions for this ticker
+        t_df["Strategy_Ret"] = strat_rets
+        t_df["Position"]     = position
+        all_rets.append(t_df)
 
-    combined = pd.concat(all_rets, ignore_index=True)
+    combined      = pd.concat(all_rets)
     portfolio_ret = combined.groupby("Date")["Strategy_Ret"].mean()
 
+    # Guard against divide-by-zero if the strategy produced flat returns
     if portfolio_ret.std() == 0:
         return 0.0, combined
-
     sharpe = (portfolio_ret.mean() / portfolio_ret.std()) * np.sqrt(252)
     return sharpe, combined
 
 
-def get_device():
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
+# Main pipeline function to build, tune, and evaluate the enhanced HDE.
+def build_enhanced_hde():
+     # Load the validation and test arrays
+    X_val   = np.load("data/modeling/X_val.npy")
+    X_test  = np.load("data/modeling/X_test.npy")
+    y_val   = np.load("data/modeling/y_val_returns.npy")
+    y_test  = np.load("data/modeling/y_test_returns.npy")
 
+    # Load the matching metadata and full master dataset
+    val_meta  = pd.read_csv("data/modeling/val_metadata.csv")
+    test_meta = pd.read_csv("data/modeling/test_metadata.csv")
+    full_df   = pd.read_csv("data/processed/master_dataset.csv")
 
-def generate_lstm_val_predictions(X_val, y_val, val_meta):
-    with open("models/lstm/best_config.json", "r") as f:
+    val_meta["Date"]  = pd.to_datetime(val_meta["Date"])
+    test_meta["Date"] = pd.to_datetime(test_meta["Date"])
+
+    # Load the saved LSTM test predictions from the earlier script
+    lstm_test_df    = pd.read_csv("data/results/lstm_predictions.csv")
+    lstm_test_preds = lstm_test_df["Pred_LSTM"].values
+    lstm_test_meta  = lstm_test_df[["Date", "Ticker"]].copy()
+
+   # Re-run LSTM inference on the validation set so it can be included in tuning
+
+    with open("models/lstm/best_config.json") as f:
         lstm_cfg = json.load(f)
 
-    device = get_device()
+    # Pick the best available device automatically
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
 
-    model = LSTMRegressor(
-        input_size=X_val.shape[1],
-        hidden_size=lstm_cfg["hidden_size"],
-        num_layers=2,
-        dropout=lstm_cfg["dropout"],
+    # Rebuild the trained LSTM using the saved configuration
+    lstm_model = LSTMRegressor(
+        X_val.shape[1], lstm_cfg["hidden_size"], 2, lstm_cfg["dropout"]
     ).to(device)
+    lstm_model.load_state_dict(
+        torch.load("models/lstm/best_lstm.pth", map_location=device)
+    )
+    lstm_model.eval()
 
-    model.load_state_dict(torch.load("models/lstm/best_lstm.pth", map_location=device))
-    model.eval()
-
-    seq_len = lstm_cfg["seq_len"]
-    val_sequences = []
-    val_seq_meta = []
-
+    # Build rolling sequences for the validation set ticker by ticker
+    sl = lstm_cfg["seq_len"]
+    val_seqs, val_seq_meta = [], []
     for ticker in val_meta["Ticker"].unique():
-        mask = val_meta["Ticker"].values == ticker
-        X_ticker = X_val[mask]
-        meta_ticker = val_meta[mask].reset_index(drop=True)
-
-        for i in range(seq_len, len(X_ticker)):
-            val_sequences.append(X_ticker[i - seq_len:i])
-            val_seq_meta.append(
-                {
-                    "Date": meta_ticker.iloc[i]["Date"],
-                    "Ticker": ticker,
-                }
-            )
-
-    val_sequences = np.array(val_sequences)
+        mask       = val_meta["Ticker"].values == ticker
+        X_tick     = X_val[mask]
+        y_tick     = y_val[mask]
+        meta_tick  = val_meta[mask].reset_index(drop=True)
+        for i in range(sl, len(X_tick)):
+            val_seqs.append(X_tick[i - sl : i])
+            val_seq_meta.append({"Date": meta_tick.iloc[i]["Date"], "Ticker": ticker})
+    val_seqs    = np.array(val_seqs)
     val_seq_meta = pd.DataFrame(val_seq_meta)
 
+    # Run the LSTM on the validation sequences
     with torch.no_grad():
-        preds = model(torch.FloatTensor(val_sequences).to(device)).cpu().numpy()
+        lstm_val_preds = lstm_model(
+            torch.FloatTensor(val_seqs).to(device)
+        ).cpu().numpy()
 
-    return preds, val_seq_meta
-
-
-def build_enhanced_hde():
-    X_val = np.load("data/modeling/X_val.npy")
-    X_test = np.load("data/modeling/X_test.npy")
-    y_val = np.load("data/modeling/y_val_returns.npy")
-    y_test = np.load("data/modeling/y_test_returns.npy")
-
-    val_meta = pd.read_csv("data/modeling/val_metadata.csv")
-    test_meta = pd.read_csv("data/modeling/test_metadata.csv")
-    full_df = pd.read_csv("data/processed/master_dataset.csv")
-
-    val_meta["Date"] = pd.to_datetime(val_meta["Date"])
-    test_meta["Date"] = pd.to_datetime(test_meta["Date"])
-    full_df["Date"] = pd.to_datetime(full_df["Date"])
-
-    lstm_test_df = pd.read_csv("data/results/lstm_predictions.csv")
-    lstm_test_df["Date"] = pd.to_datetime(lstm_test_df["Date"])
-    lstm_test_preds = lstm_test_df["Pred_LSTM"].values
-    lstm_test_meta = lstm_test_df[["Date", "Ticker"]].copy()
-
-    lstm_val_preds, val_seq_meta = generate_lstm_val_predictions(X_val, y_val, val_meta)
-
-    vix_col = [col for col in full_df.columns if "vix" in col.lower()][0]
+    # Find the VIX column from the master dataset and merge it into both metadata sets
+    vix_col  = [c for c in full_df.columns if "vix" in c.lower()][0]
     vix_data = full_df[["Date", "Ticker", vix_col]].copy()
-    vix_data = vix_data.rename(columns={vix_col: "VIX_Value"})
+    vix_data.rename(columns={vix_col: "VIX_Value"}, inplace=True)
+    vix_data["Date"] = pd.to_datetime(vix_data["Date"])
 
-    val_meta = val_meta.merge(vix_data, on=["Date", "Ticker"], how="left")
+    val_meta  = val_meta.merge(vix_data, on=["Date", "Ticker"], how="left")
     test_meta = test_meta.merge(vix_data, on=["Date", "Ticker"], how="left")
 
-    train_vix = full_df[full_df["Date"] < "2023-01-01"][vix_col].dropna()
-    vix_50th = float(train_vix.quantile(0.50))
-    vix_75th = float(train_vix.quantile(0.75))
+    # Use the training period only to define the VIX regime thresholds
+    train_vix = full_df[pd.to_datetime(full_df["Date"]) < "2023-01-01"][vix_col].dropna()
+    vix_50th  = float(train_vix.quantile(0.50))   # low → elevated boundary
+    vix_75th  = float(train_vix.quantile(0.75))   # elevated → high boundary
+    print(f"VIX regime thresholds (training data):  50th={vix_50th:.1f}  75th={vix_75th:.1f}")
 
-    print(f"VIX regime thresholds: 50th={vix_50th:.1f}, 75th={vix_75th:.1f}")
-
+    # Load the trained baseline regressors
     rf = joblib.load("models/baselines/RF_Regressor.pkl")
     gb = joblib.load("models/baselines/GB_Regressor.pkl")
 
-    print("\nTuning ensemble parameters on validation set...")
-    print("=" * 60)
+    # Tune the ensemble settings on the 2023 validation set
+    print("\nTuning ensemble parameters on validation set (2023):")
 
+    # Test all parameter combinations and keep the one with the best Sharpe ratio
     param_grid = [
-        {
-            "window": w,
-            "decay": d,
-            "threshold": th,
-            "fractional": fr,
-            "allow_short": sh,
-            "dd_limit": dd,
-        }
-        for w in [10, 20, 30]
-        for d in [0.90, 0.95, 1.00]
+        {"window": w, "decay": d, "threshold": th,
+         "fractional": fr, "allow_short": sh,
+         "dd_limit": dd}
+        for w  in [10, 20, 30]
+        for d  in [0.90, 0.95, 1.00]
         for th in [0.0, 0.0005, 0.001, 0.002]
         for fr in [True, False]
         for sh in [True, False]
         for dd in [0.10, 0.15, 0.20]
     ]
 
-    best_sharpe = -999
-    best_params = None
+    best_sharpe   = -999
+    best_params   = None
     tuning_results = []
 
+    # Evaluate every grid configuration on the validation set
     for params in param_grid:
-        val_ensemble = compute_ensemble_predictions(
-            val_meta,
-            X_val,
-            y_val,
-            rf,
-            gb,
-            lstm_val_preds,
-            val_seq_meta,
-            window=params["window"],
-            decay=params["decay"],
+        val_ens = compute_ensemble_predictions(
+            val_meta, X_val, y_val, rf, gb,
+            lstm_val_preds, val_seq_meta,
+            window=params["window"], decay=params["decay"]
         )
-
         sharpe, _ = sharpe_from_signals(
-            val_ensemble,
-            threshold=params["threshold"],
-            vix_low=vix_50th,
-            vix_high=vix_75th,
-            use_fractional=params["fractional"],
-            allow_short=params["allow_short"],
-            dd_limit=params["dd_limit"],
+            val_ens,
+            threshold    = params["threshold"],
+            vix_low      = vix_50th,
+            vix_high     = vix_75th,
+            use_fractional = params["fractional"],
+            allow_short  = params["allow_short"],
+            dd_limit     = params["dd_limit"],
         )
-
         tuning_results.append({**params, "val_sharpe": sharpe})
-
         if sharpe > best_sharpe:
             best_sharpe = sharpe
             best_params = params
 
-    print("Configurations tested:", len(param_grid))
-    print("Best validation Sharpe:", round(best_sharpe, 3))
-    print("Best parameters:", best_params)
+    # Print the best validation result and save the tuning log
+    print(f"Configurations tested:   {len(param_grid)}")
+    print(f"Best Validation Sharpe:  {best_sharpe:.3f}")
+    print(f"Best Parameters:         {best_params}")
 
     os.makedirs("data/results", exist_ok=True)
     pd.DataFrame(tuning_results).to_csv("data/results/ensemble_tuning_log.csv", index=False)
 
-    print("\nApplying best parameters to test set...")
+    # Apply the best settings to the held-out test set
+    print(f"\nApplying best parameters to test set (2024+)...")
 
     test_ensemble = compute_ensemble_predictions(
-        test_meta,
-        X_test,
-        y_test,
-        rf,
-        gb,
-        lstm_test_preds,
-        lstm_test_meta,
-        window=best_params["window"],
-        decay=best_params["decay"],
+        test_meta, X_test, y_test, rf, gb,
+        lstm_test_preds, lstm_test_meta,
+        window=best_params["window"], decay=best_params["decay"]
     )
-
     test_ensemble.to_csv("data/results/hde_final_results.csv", index=False)
 
+    # Save the chosen ensemble configuration for later reference
     best_config = {
         **best_params,
-        "vix_low": vix_50th,
-        "vix_high": vix_75th,
-        "val_sharpe": best_sharpe,
+        "vix_low":     vix_50th,
+        "vix_high":    vix_75th,
+        "val_sharpe":  best_sharpe,
     }
-
     with open("data/results/best_ensemble_config.json", "w") as f:
         json.dump(best_config, f, indent=2)
 
-    valid = test_ensemble.dropna(subset=["Ensemble_Delta"])
-    ens_mae = mean_absolute_error(valid["Actual"], valid["Ensemble_Delta"])
-    ens_dir = np.mean((valid["Ensemble_Delta"] > 0) == (valid["Actual"] > 0))
-
-    print("\nHDE v3 test metrics:")
-    print(f"MAE: {ens_mae:.6f}")
-    print(f"Directional accuracy: {ens_dir:.2%}")
-    print("Saved results to data/results/hde_final_results.csv")
+    # Calculate final test metrics for the ensemble predictions
+    valid    = test_ensemble.dropna(subset=["Ensemble_Delta"])
+    ens_mae  = mean_absolute_error(valid["Actual"], valid["Ensemble_Delta"])
+    ens_dir  = np.mean((valid["Ensemble_Delta"] > 0) == (valid["Actual"] > 0))
+    print(f"\nHDE Test Metrics:")
+    print(f"  MAE:                  {ens_mae:.6f}")
+    print(f"  Directional Accuracy: {ens_dir:.2%}")
+    print(f"  Results saved to data/results/hde_final_results.csv")
 
     return test_ensemble, best_config
 
