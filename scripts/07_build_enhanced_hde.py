@@ -34,10 +34,14 @@ def compute_ensemble_predictions(
     y_data,
     rf,
     gb,
-    lstm_preds=None,
-    lstm_meta=None,
+    lstm_preds,
+    lstm_meta,
     window=10,
+    decay=0.95,
+    weight_smooth_alpha=0.15,
 ):
+    eps = 1e-6
+
     meta = metadata.copy()
     meta["Actual"] = y_data
     meta["Pred_RF"] = rf.predict(X_data)
@@ -45,8 +49,8 @@ def compute_ensemble_predictions(
 
     if lstm_preds is not None and lstm_meta is not None and len(lstm_preds) > 0:
         lstm_df = lstm_meta.copy()
-        lstm_df["Date"] = pd.to_datetime(lstm_df["Date"])
         lstm_df["Pred_LSTM"] = lstm_preds
+        lstm_df["Date"] = pd.to_datetime(lstm_df["Date"])
         meta["Date"] = pd.to_datetime(meta["Date"])
         meta = meta.merge(
             lstm_df[["Date", "Ticker", "Pred_LSTM"]],
@@ -67,18 +71,84 @@ def compute_ensemble_predictions(
         weight_lstm = np.full(n, 1 / 3)
         ensemble_pred = np.zeros(n)
 
-        rf_preds = ticker_df["Pred_RF"].values
-        gb_preds = ticker_df["Pred_GB"].values
-        lstm_preds_t = ticker_df["Pred_LSTM"].values
+        actual = ticker_df["Actual"].values
+        pred_rf = ticker_df["Pred_RF"].values.copy()
+        pred_gb = ticker_df["Pred_GB"].values.copy()
+        pred_lstm = ticker_df["Pred_LSTM"].values.copy()
 
-        for i in range(n):
-            if np.isnan(lstm_preds_t[i]):
-                ensemble_pred[i] = 0.5 * rf_preds[i] + 0.5 * gb_preds[i]
-                weight_rf[i] = 0.5
-                weight_gb[i] = 0.5
-                weight_lstm[i] = 0.0
+        smooth_rf, smooth_gb, smooth_lstm = 1 / 3, 1 / 3, 1 / 3
+
+        for i in range(min(window, n)):
+            if np.isnan(pred_lstm[i]):
+                ensemble_pred[i] = 0.5 * pred_rf[i] + 0.5 * pred_gb[i]
             else:
-                ensemble_pred[i] = (rf_preds[i] + gb_preds[i] + lstm_preds_t[i]) / 3.0
+                ensemble_pred[i] = (pred_rf[i] + pred_gb[i] + pred_lstm[i]) / 3.0
+
+        for i in range(window, n):
+            decay_weights = np.array([decay ** (window - 1 - j) for j in range(window)])
+            decay_weights /= decay_weights.sum()
+
+            hist_actual = actual[i - window:i]
+            hist_rf = pred_rf[i - window:i]
+            hist_gb = pred_gb[i - window:i]
+
+            bias_rf = float(np.dot(decay_weights, hist_rf - hist_actual))
+            bias_gb = float(np.dot(decay_weights, hist_gb - hist_actual))
+
+            pred_rf_corrected = pred_rf[i] - bias_rf
+            pred_gb_corrected = pred_gb[i] - bias_gb
+
+            mae_rf = float(np.dot(decay_weights, np.abs(hist_rf - hist_actual)))
+            mae_gb = float(np.dot(decay_weights, np.abs(hist_gb - hist_actual)))
+
+            dir_rf = float(
+                np.dot(decay_weights, ((hist_rf > 0) == (hist_actual > 0)).astype(float))
+            )
+            dir_gb = float(
+                np.dot(decay_weights, ((hist_gb > 0) == (hist_actual > 0)).astype(float))
+            )
+
+            score_rf = 0.7 / (mae_rf + eps) + 0.3 * dir_rf
+            score_gb = 0.7 / (mae_gb + eps) + 0.3 * dir_gb
+
+            hist_lstm = pred_lstm[i - window:i]
+
+            if np.any(np.isnan(hist_lstm)):
+                total_score = score_rf + score_gb
+                raw_rf = score_rf / total_score
+                raw_gb = score_gb / total_score
+                raw_lstm = 0.0
+                pred_lstm_corrected = 0.0
+            else:
+                bias_lstm = float(np.dot(decay_weights, hist_lstm - hist_actual))
+                pred_lstm_corrected = pred_lstm[i] - bias_lstm
+
+                mae_lstm = float(np.dot(decay_weights, np.abs(hist_lstm - hist_actual)))
+                dir_lstm = float(
+                    np.dot(decay_weights, ((hist_lstm > 0) == (hist_actual > 0)).astype(float))
+                )
+                score_lstm = 0.7 / (mae_lstm + eps) + 0.3 * dir_lstm
+
+                total_score = score_rf + score_gb + score_lstm
+                raw_rf = score_rf / total_score
+                raw_gb = score_gb / total_score
+                raw_lstm = score_lstm / total_score
+
+            alpha = weight_smooth_alpha
+            smooth_rf = (1 - alpha) * smooth_rf + alpha * raw_rf
+            smooth_gb = (1 - alpha) * smooth_gb + alpha * raw_gb
+            smooth_lstm = (1 - alpha) * smooth_lstm + alpha * raw_lstm
+
+            weight_sum = smooth_rf + smooth_gb + smooth_lstm
+            weight_rf[i] = smooth_rf / weight_sum
+            weight_gb[i] = smooth_gb / weight_sum
+            weight_lstm[i] = smooth_lstm / weight_sum
+
+            ensemble_pred[i] = (
+                weight_rf[i] * pred_rf_corrected
+                + weight_gb[i] * pred_gb_corrected
+                + weight_lstm[i] * pred_lstm_corrected
+            )
 
         ticker_df["Weight_RF"] = weight_rf
         ticker_df["Weight_GB"] = weight_gb
@@ -91,12 +161,12 @@ def compute_ensemble_predictions(
 
 def sharpe_from_signals(
     results_df,
-    threshold=0.001,
-    vix_low=20.0,
-    vix_high=30.0,
-    use_fractional=True,
-    allow_short=True,
-    dd_limit=0.15,
+    threshold,
+    vix_low,
+    vix_high,
+    use_fractional,
+    allow_short,
+    dd_limit,
     pos_scale=1.0,
     tx_cost=0.0005,
 ):
@@ -104,7 +174,7 @@ def sharpe_from_signals(
 
     for ticker in results_df["Ticker"].unique():
         ticker_df = results_df[results_df["Ticker"] == ticker].copy().sort_values("Date")
-        preds = ticker_df["Ensemble_Delta"].values
+        pred = ticker_df["Ensemble_Delta"].values
         actual = ticker_df["Actual"].values
         vix = ticker_df["VIX_Value"].values if "VIX_Value" in ticker_df.columns else np.zeros(len(ticker_df))
         n = len(ticker_df)
@@ -112,31 +182,31 @@ def sharpe_from_signals(
         position = np.zeros(n)
         equity = [1.0]
         peak = 1.0
-        strategy_rets = np.zeros(n)
+        strat_rets = np.zeros(n)
 
         for i in range(1, n):
-            pred = preds[i - 1]
-            vix_value = vix[i - 1]
+            p = pred[i - 1]
+            v = vix[i - 1]
 
-            if vix_value > vix_high:
+            if v > vix_high:
                 eff_threshold = threshold * 3.0
-            elif vix_value > vix_low:
+            elif v > vix_low:
                 eff_threshold = threshold * 1.5
             else:
                 eff_threshold = threshold
 
             if use_fractional:
                 denom = eff_threshold * 5 + 1e-9
-                if pred > eff_threshold:
-                    position[i] = min(pred / denom * pos_scale, 1.0)
-                elif allow_short and pred < -eff_threshold:
-                    position[i] = max(pred / denom * pos_scale, -1.0)
+                if p > eff_threshold:
+                    position[i] = min(p / denom * pos_scale, 1.0)
+                elif allow_short and p < -eff_threshold:
+                    position[i] = max(p / denom * pos_scale, -1.0)
                 else:
                     position[i] = 0.0
             else:
-                if pred > eff_threshold:
+                if p > eff_threshold:
                     position[i] = 1.0
-                elif allow_short and pred < -eff_threshold:
+                elif allow_short and p < -eff_threshold:
                     position[i] = -1.0
                 else:
                     position[i] = 0.0
@@ -147,12 +217,14 @@ def sharpe_from_signals(
                 position[i] *= max(1.0 - severity, 0.0)
 
             pos_change = abs(position[i] - position[i - 1])
-            strategy_rets[i] = position[i] * actual[i] - pos_change * tx_cost
-            equity.append(equity[-1] * (1 + strategy_rets[i]))
+            ret = position[i] * actual[i] - pos_change * tx_cost
+            strat_rets[i] = ret
+
+            equity.append(equity[-1] * (1 + ret))
             peak = max(peak, equity[-1])
 
+        ticker_df["Strategy_Ret"] = strat_rets
         ticker_df["Position"] = position
-        ticker_df["Strategy_Ret"] = strategy_rets
         all_rets.append(ticker_df)
 
     combined = pd.concat(all_rets, ignore_index=True)
@@ -194,9 +266,9 @@ def generate_lstm_val_predictions(X_val, y_val, val_meta):
     val_seq_meta = []
 
     for ticker in val_meta["Ticker"].unique():
-        ticker_mask = val_meta["Ticker"].values == ticker
-        X_ticker = X_val[ticker_mask]
-        meta_ticker = val_meta[ticker_mask].reset_index(drop=True)
+        mask = val_meta["Ticker"].values == ticker
+        X_ticker = X_val[mask]
+        meta_ticker = val_meta[mask].reset_index(drop=True)
 
         for i in range(seq_len, len(X_ticker)):
             val_sequences.append(X_ticker[i - seq_len:i])
@@ -248,19 +320,25 @@ def build_enhanced_hde():
     vix_50th = float(train_vix.quantile(0.50))
     vix_75th = float(train_vix.quantile(0.75))
 
+    print(f"VIX regime thresholds: 50th={vix_50th:.1f}, 75th={vix_75th:.1f}")
+
     rf = joblib.load("models/baselines/RF_Regressor.pkl")
     gb = joblib.load("models/baselines/GB_Regressor.pkl")
 
-    print("Tuning ensemble parameters on validation set...")
+    print("\nTuning ensemble parameters on validation set...")
+    print("=" * 60)
+
     param_grid = [
         {
             "window": w,
+            "decay": d,
             "threshold": th,
             "fractional": fr,
             "allow_short": sh,
             "dd_limit": dd,
         }
         for w in [10, 20, 30]
+        for d in [0.90, 0.95, 1.00]
         for th in [0.0, 0.0005, 0.001, 0.002]
         for fr in [True, False]
         for sh in [True, False]
@@ -272,7 +350,7 @@ def build_enhanced_hde():
     tuning_results = []
 
     for params in param_grid:
-        val_results = compute_ensemble_predictions(
+        val_ensemble = compute_ensemble_predictions(
             val_meta,
             X_val,
             y_val,
@@ -281,10 +359,11 @@ def build_enhanced_hde():
             lstm_val_preds,
             val_seq_meta,
             window=params["window"],
+            decay=params["decay"],
         )
 
         sharpe, _ = sharpe_from_signals(
-            val_results,
+            val_ensemble,
             threshold=params["threshold"],
             vix_low=vix_50th,
             vix_high=vix_75th,
@@ -306,7 +385,9 @@ def build_enhanced_hde():
     os.makedirs("data/results", exist_ok=True)
     pd.DataFrame(tuning_results).to_csv("data/results/ensemble_tuning_log.csv", index=False)
 
-    test_results = compute_ensemble_predictions(
+    print("\nApplying best parameters to test set...")
+
+    test_ensemble = compute_ensemble_predictions(
         test_meta,
         X_test,
         y_test,
@@ -315,18 +396,31 @@ def build_enhanced_hde():
         lstm_test_preds,
         lstm_test_meta,
         window=best_params["window"],
+        decay=best_params["decay"],
     )
 
-    test_results.to_csv("data/results/hde_final_results.csv", index=False)
+    test_ensemble.to_csv("data/results/hde_final_results.csv", index=False)
 
-    valid = test_results.dropna(subset=["Ensemble_Delta"])
+    best_config = {
+        **best_params,
+        "vix_low": vix_50th,
+        "vix_high": vix_75th,
+        "val_sharpe": best_sharpe,
+    }
+
+    with open("data/results/best_ensemble_config.json", "w") as f:
+        json.dump(best_config, f, indent=2)
+
+    valid = test_ensemble.dropna(subset=["Ensemble_Delta"])
     ens_mae = mean_absolute_error(valid["Actual"], valid["Ensemble_Delta"])
     ens_dir = np.mean((valid["Ensemble_Delta"] > 0) == (valid["Actual"] > 0))
 
-    print("Test MAE:", round(ens_mae, 6))
-    print("Test directional accuracy:", f"{ens_dir:.2%}")
+    print("\nHDE v3 test metrics:")
+    print(f"MAE: {ens_mae:.6f}")
+    print(f"Directional accuracy: {ens_dir:.2%}")
+    print("Saved results to data/results/hde_final_results.csv")
 
-    return test_results, best_params
+    return test_ensemble, best_config
 
 
 if __name__ == "__main__":
