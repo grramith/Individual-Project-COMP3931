@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from sklearn.metrics import mean_absolute_error
 
 
 class LSTMRegressor(nn.Module):
@@ -95,6 +96,8 @@ def sharpe_from_signals(
     vix_high=30.0,
     use_fractional=True,
     allow_short=True,
+    dd_limit=0.15,
+    pos_scale=1.0,
     tx_cost=0.0005,
 ):
     all_rets = []
@@ -107,6 +110,8 @@ def sharpe_from_signals(
         n = len(ticker_df)
 
         position = np.zeros(n)
+        equity = [1.0]
+        peak = 1.0
         strategy_rets = np.zeros(n)
 
         for i in range(1, n):
@@ -121,10 +126,11 @@ def sharpe_from_signals(
                 eff_threshold = threshold
 
             if use_fractional:
+                denom = eff_threshold * 5 + 1e-9
                 if pred > eff_threshold:
-                    position[i] = min(pred / (eff_threshold * 5 + 1e-9), 1.0)
+                    position[i] = min(pred / denom * pos_scale, 1.0)
                 elif allow_short and pred < -eff_threshold:
-                    position[i] = max(pred / (eff_threshold * 5 + 1e-9), -1.0)
+                    position[i] = max(pred / denom * pos_scale, -1.0)
                 else:
                     position[i] = 0.0
             else:
@@ -135,8 +141,15 @@ def sharpe_from_signals(
                 else:
                     position[i] = 0.0
 
+            dd = (equity[-1] - peak) / peak if peak > 0 else 0.0
+            if dd < -dd_limit:
+                severity = min((abs(dd) - dd_limit) / dd_limit, 1.0)
+                position[i] *= max(1.0 - severity, 0.0)
+
             pos_change = abs(position[i] - position[i - 1])
             strategy_rets[i] = position[i] * actual[i] - pos_change * tx_cost
+            equity.append(equity[-1] * (1 + strategy_rets[i]))
+            peak = max(peak, equity[-1])
 
         ticker_df["Position"] = position
         ticker_df["Strategy_Ret"] = strategy_rets
@@ -238,22 +251,60 @@ def build_enhanced_hde():
     rf = joblib.load("models/baselines/RF_Regressor.pkl")
     gb = joblib.load("models/baselines/GB_Regressor.pkl")
 
-    val_results = compute_ensemble_predictions(
-        val_meta,
-        X_val,
-        y_val,
-        rf,
-        gb,
-        lstm_val_preds,
-        val_seq_meta,
-    )
+    print("Tuning ensemble parameters on validation set...")
+    param_grid = [
+        {
+            "window": w,
+            "threshold": th,
+            "fractional": fr,
+            "allow_short": sh,
+            "dd_limit": dd,
+        }
+        for w in [10, 20, 30]
+        for th in [0.0, 0.0005, 0.001, 0.002]
+        for fr in [True, False]
+        for sh in [True, False]
+        for dd in [0.10, 0.15, 0.20]
+    ]
 
-    val_sharpe, _ = sharpe_from_signals(
-        val_results,
-        threshold=0.001,
-        vix_low=vix_50th,
-        vix_high=vix_75th,
-    )
+    best_sharpe = -999
+    best_params = None
+    tuning_results = []
+
+    for params in param_grid:
+        val_results = compute_ensemble_predictions(
+            val_meta,
+            X_val,
+            y_val,
+            rf,
+            gb,
+            lstm_val_preds,
+            val_seq_meta,
+            window=params["window"],
+        )
+
+        sharpe, _ = sharpe_from_signals(
+            val_results,
+            threshold=params["threshold"],
+            vix_low=vix_50th,
+            vix_high=vix_75th,
+            use_fractional=params["fractional"],
+            allow_short=params["allow_short"],
+            dd_limit=params["dd_limit"],
+        )
+
+        tuning_results.append({**params, "val_sharpe": sharpe})
+
+        if sharpe > best_sharpe:
+            best_sharpe = sharpe
+            best_params = params
+
+    print("Configurations tested:", len(param_grid))
+    print("Best validation Sharpe:", round(best_sharpe, 3))
+    print("Best parameters:", best_params)
+
+    os.makedirs("data/results", exist_ok=True)
+    pd.DataFrame(tuning_results).to_csv("data/results/ensemble_tuning_log.csv", index=False)
 
     test_results = compute_ensemble_predictions(
         test_meta,
@@ -263,14 +314,19 @@ def build_enhanced_hde():
         gb,
         lstm_test_preds,
         lstm_test_meta,
+        window=best_params["window"],
     )
 
-    print("Validation Sharpe:", round(val_sharpe, 3))
-    print(f"VIX thresholds: 50th={vix_50th:.1f}, 75th={vix_75th:.1f}")
-    print("Validation ensemble rows:", len(val_results))
-    print("Test ensemble rows:", len(test_results))
+    test_results.to_csv("data/results/hde_final_results.csv", index=False)
 
-    return val_results, test_results
+    valid = test_results.dropna(subset=["Ensemble_Delta"])
+    ens_mae = mean_absolute_error(valid["Actual"], valid["Ensemble_Delta"])
+    ens_dir = np.mean((valid["Ensemble_Delta"] > 0) == (valid["Actual"] > 0))
+
+    print("Test MAE:", round(ens_mae, 6))
+    print("Test directional accuracy:", f"{ens_dir:.2%}")
+
+    return test_results, best_params
 
 
 if __name__ == "__main__":
