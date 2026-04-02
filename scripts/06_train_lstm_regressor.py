@@ -54,104 +54,164 @@ def get_device():
 def train_lstm():
     X_train = np.load("data/modeling/X_train.npy")
     X_val = np.load("data/modeling/X_val.npy")
+    X_test = np.load("data/modeling/X_test.npy")
+
     y_train = np.load("data/modeling/y_train_returns.npy")
     y_val = np.load("data/modeling/y_val_returns.npy")
+    y_test = np.load("data/modeling/y_test_returns.npy")
 
     meta_train = pd.read_csv("data/modeling/train_metadata.csv")
     meta_val = pd.read_csv("data/modeling/val_metadata.csv")
-
-    seq_len = 10
-    hidden_size = 64
-    batch_size = 64
-    num_epochs = 50
-    learning_rate = 0.001
-    dropout = 0.3
-    patience = 10
-
-    X_train_seq, y_train_seq = create_sequences_per_ticker(
-        X_train, y_train, meta_train, seq_len
-    )
-    X_val_seq, y_val_seq = create_sequences_per_ticker(
-        X_val, y_val, meta_val, seq_len
-    )
-
-    train_dataset = TensorDataset(
-        torch.FloatTensor(X_train_seq),
-        torch.FloatTensor(y_train_seq)
-    )
-    val_dataset = TensorDataset(
-        torch.FloatTensor(X_val_seq),
-        torch.FloatTensor(y_val_seq)
-    )
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    meta_test = pd.read_csv("data/modeling/test_metadata.csv")
 
     device = get_device()
     print(f"Using device: {device}")
 
-    model = LSTMRegressor(
-        input_size=X_train.shape[1],
-        hidden_size=hidden_size,
-        num_layers=2,
-        dropout=dropout
-    ).to(device)
+    hyperparam_configs = [
+        {"seq_len": 10, "hidden_size": 64, "lr": 0.001, "dropout": 0.3},
+        {"seq_len": 20, "hidden_size": 64, "lr": 0.001, "dropout": 0.3},
+        {"seq_len": 10, "hidden_size": 128, "lr": 0.0005, "dropout": 0.2},
+        {"seq_len": 20, "hidden_size": 128, "lr": 0.0005, "dropout": 0.2},
+    ]
 
-    criterion = nn.MSELoss()
-    optimiser = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    num_epochs = 50
+    batch_size = 64
+    patience = 10
 
     best_val_loss = float("inf")
-    best_state = None
-    patience_counter = 0
+    best_config = None
+    best_model_state = None
 
-    for epoch in range(num_epochs):
-        model.train()
-        train_loss = 0.0
+    print("Tuning LSTM hyperparameters on validation set...")
+    print("=" * 70)
 
-        for X_batch, y_batch in train_loader:
-            X_batch = X_batch.to(device)
-            y_batch = y_batch.to(device)
+    for cfg in hyperparam_configs:
+        seq_len = cfg["seq_len"]
+        print(f"\nConfig: {cfg}")
 
-            optimiser.zero_grad()
-            preds = model(X_batch)
-            loss = criterion(preds, y_batch)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimiser.step()
+        X_train_seq, y_train_seq = create_sequences_per_ticker(
+            X_train, y_train, meta_train, seq_len
+        )
+        X_val_seq, y_val_seq = create_sequences_per_ticker(
+            X_val, y_val, meta_val, seq_len
+        )
 
-            train_loss += loss.item() * len(X_batch)
+        if len(X_train_seq) == 0 or len(X_val_seq) == 0:
+            print(f"Skipping seq_len={seq_len} because there is not enough data")
+            continue
 
-        train_loss /= len(train_dataset)
+        train_dataset = TensorDataset(
+            torch.FloatTensor(X_train_seq),
+            torch.FloatTensor(y_train_seq)
+        )
+        val_dataset = TensorDataset(
+            torch.FloatTensor(X_val_seq),
+            torch.FloatTensor(y_val_seq)
+        )
 
-        model.eval()
-        val_loss = 0.0
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-        with torch.no_grad():
-            for X_batch, y_batch in val_loader:
+        model = LSTMRegressor(
+            input_size=X_train.shape[1],
+            hidden_size=cfg["hidden_size"],
+            num_layers=2,
+            dropout=cfg["dropout"]
+        ).to(device)
+
+        criterion = nn.MSELoss()
+        optimiser = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
+
+        best_epoch_val_loss = float("inf")
+        best_state = None
+        patience_counter = 0
+
+        for epoch in range(num_epochs):
+            model.train()
+            train_loss = 0.0
+
+            for X_batch, y_batch in train_loader:
                 X_batch = X_batch.to(device)
                 y_batch = y_batch.to(device)
 
+                optimiser.zero_grad()
                 preds = model(X_batch)
                 loss = criterion(preds, y_batch)
-                val_loss += loss.item() * len(X_batch)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimiser.step()
 
-        val_loss /= len(val_dataset)
+                train_loss += loss.item() * len(X_batch)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-            patience_counter = 0
-        else:
-            patience_counter += 1
+            train_loss /= len(train_dataset)
 
-        print(f"Epoch {epoch + 1}/{num_epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+            model.eval()
+            val_loss = 0.0
 
-        if patience_counter >= patience:
-            print(f"Early stopping at epoch {epoch + 1}")
-            break
+            with torch.no_grad():
+                for X_batch, y_batch in val_loader:
+                    X_batch = X_batch.to(device)
+                    y_batch = y_batch.to(device)
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
+                    preds = model(X_batch)
+                    loss = criterion(preds, y_batch)
+                    val_loss += loss.item() * len(X_batch)
+
+            val_loss /= len(val_dataset)
+
+            if val_loss < best_epoch_val_loss:
+                best_epoch_val_loss = val_loss
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f"  Early stopping at epoch {epoch + 1}")
+                    break
+
+            if (epoch + 1) % 10 == 0:
+                print(f"  Epoch {epoch + 1}/{num_epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
+
+        print(f"  Best Val Loss: {best_epoch_val_loss:.6f}")
+
+        if best_epoch_val_loss < best_val_loss:
+            best_val_loss = best_epoch_val_loss
+            best_config = cfg
+            best_model_state = best_state
+
+    if best_config is None:
+        print("No valid LSTM config found")
+        return None, None
+
+    print("=" * 70)
+    print(f"Best LSTM Config: {best_config}")
+    print(f"Best Val Loss: {best_val_loss:.6f}")
+
+    final_model = LSTMRegressor(
+        input_size=X_train.shape[1],
+        hidden_size=best_config["hidden_size"],
+        num_layers=2,
+        dropout=best_config["dropout"]
+    ).to(device)
+    final_model.load_state_dict(best_model_state)
+
+    X_test_seq, y_test_seq = create_sequences_per_ticker(
+        X_test, y_test, meta_test, best_config["seq_len"]
+    )
+
+    final_model.eval()
+    with torch.no_grad():
+        test_preds = final_model(torch.FloatTensor(X_test_seq).to(device)).cpu().numpy()
+
+    test_mae = np.mean(np.abs(y_test_seq - test_preds))
+    test_dir_acc = np.mean((test_preds > 0) == (y_test_seq > 0))
+
+    print("\nTest Performance:")
+    print(f"  MAE: {test_mae:.6f}")
+    print(f"  Directional Accuracy: {test_dir_acc:.2%}")
+    print(f"  Test sequences: {len(test_preds)}")
+
+    return test_preds, y_test_seq
 
 
 if __name__ == "__main__":
