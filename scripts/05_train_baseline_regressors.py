@@ -10,13 +10,14 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 def train_baseline_regressors():
 
-    # Load preprocessed train, validation, and test splits
+     # Load preprocessed train, validation, and test splits
     X_train = np.load("data/modeling/X_train.npy")
     X_val = np.load("data/modeling/X_val.npy")
     X_test = np.load("data/modeling/X_test.npy")
     y_train = np.load("data/modeling/y_train_returns.npy")
     y_val = np.load("data/modeling/y_val_returns.npy")
     y_test = np.load("data/modeling/y_test_returns.npy")
+
 
     # Define simple search spaces for each model and validate the set used for tuning to avoid test leakage
     param_grids = {
@@ -49,21 +50,20 @@ def train_baseline_regressors():
         },
     }
 
-    # Include a basic linear model as a benchmark reference
+     # Include a basic linear model as a benchmark reference
     baselines = {"Linear_Regression": LinearRegression()}
     
-
-    # Ensure output directories exist before saving anything
+     # Ensure output directories exist before saving anything
     os.makedirs("models/baselines", exist_ok=True)
     os.makedirs("data/results", exist_ok=True)
     
     results = []
     tuning_logs = []
 
-    print(f"Training & Tuning Baseline Regressors")
-    print("-" * 70)
+    print(f"Training & Tuning Baseline Regressors...")
+    print("=" * 70)
 
-    # Train linear regression without tuning as a baseline check
+     # Train linear regression without tuning as a baseline check
     lr = baselines["Linear_Regression"]
     lr.fit(X_train, y_train)
     y_pred_test = lr.predict(X_test)
@@ -76,7 +76,7 @@ def train_baseline_regressors():
     test_r2 = r2_score(y_test, y_pred_test)
     test_dir_acc = np.mean((y_pred_test > 0) == (y_test > 0))
     
-    # Save trained model for later use
+     # Save trained model for later use
     joblib.dump(lr, "models/baselines/Linear_Regression.pkl")
     results.append({
         "Model": "Linear_Regression", "Best_Params": "N/A",
@@ -85,9 +85,10 @@ def train_baseline_regressors():
     })
     print(f"Linear_Regression  | Val MAE: {val_mae:.6f} | Test MAE: {test_mae:.6f} | DirAcc: {test_dir_acc:.2%}")
 
+
     # Loop through each model and perform simple validation-based tuning
     for model_name, config in param_grids.items():
-        print(f"\nTuning {model_name}")
+        print(f"\nTuning {model_name}...")
         best_val_mae = float('inf')
         best_model = None
         best_params = None
@@ -120,8 +121,7 @@ def train_baseline_regressors():
         
         # Save the best model for this configuration
         joblib.dump(best_model, f"models/baselines/{model_name}.pkl")
-
-        # Store final evaluation results
+        
         results.append({
             "Model": model_name, "Best_Params": str(best_params),
             "Val_MAE": best_val_mae, "Test_MAE": test_mae, "Test_RMSE": test_rmse,
@@ -131,13 +131,11 @@ def train_baseline_regressors():
         print(f"  >> Best: {best_params}")
         print(f"  >> Test MAE: {test_mae:.6f} | RMSE: {test_rmse:.6f} | R2: {test_r2:.4f} | DirAcc: {test_dir_acc:.2%}")
 
-
-    # Save final results for reporting and analysis
+    # Store final evaluation results
     results_df = pd.DataFrame(results)
     results_df.to_csv("data/results/baseline_regression_results.csv", index=False)
     
-
-    # Save full tuning history for reproducibility
+     # Save full tuning history for reproducibility
     tuning_df = pd.DataFrame(tuning_logs)
     tuning_df.to_csv("data/results/hyperparameter_tuning_log.csv", index=False)
     
@@ -147,3 +145,7 @@ def train_baseline_regressors():
 
 if __name__ == "__main__":
     train_baseline_regressors()
+
+
+
+
