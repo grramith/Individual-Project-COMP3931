@@ -88,6 +88,59 @@ def compute_ensemble_predictions(
     return pd.concat(final_results, ignore_index=True)
 
 
+def sharpe_from_signals(
+    results_df,
+    threshold=0.001,
+    use_fractional=True,
+    allow_short=True,
+    tx_cost=0.0005,
+):
+    all_rets = []
+
+    for ticker in results_df["Ticker"].unique():
+        ticker_df = results_df[results_df["Ticker"] == ticker].copy().sort_values("Date")
+        preds = ticker_df["Ensemble_Delta"].values
+        actual = ticker_df["Actual"].values
+        n = len(ticker_df)
+
+        position = np.zeros(n)
+        strategy_rets = np.zeros(n)
+
+        for i in range(1, n):
+            pred = preds[i - 1]
+
+            if use_fractional:
+                if pred > threshold:
+                    position[i] = min(pred / (threshold * 5 + 1e-9), 1.0)
+                elif allow_short and pred < -threshold:
+                    position[i] = max(pred / (threshold * 5 + 1e-9), -1.0)
+                else:
+                    position[i] = 0.0
+            else:
+                if pred > threshold:
+                    position[i] = 1.0
+                elif allow_short and pred < -threshold:
+                    position[i] = -1.0
+                else:
+                    position[i] = 0.0
+
+            pos_change = abs(position[i] - position[i - 1])
+            strategy_rets[i] = position[i] * actual[i] - pos_change * tx_cost
+
+        ticker_df["Position"] = position
+        ticker_df["Strategy_Ret"] = strategy_rets
+        all_rets.append(ticker_df)
+
+    combined = pd.concat(all_rets, ignore_index=True)
+    portfolio_ret = combined.groupby("Date")["Strategy_Ret"].mean()
+
+    if portfolio_ret.std() == 0:
+        return 0.0, combined
+
+    sharpe = (portfolio_ret.mean() / portfolio_ret.std()) * np.sqrt(252)
+    return sharpe, combined
+
+
 def build_enhanced_hde():
     X_val = np.load("data/modeling/X_val.npy")
     X_test = np.load("data/modeling/X_test.npy")
@@ -106,8 +159,11 @@ def build_enhanced_hde():
     gb = joblib.load("models/baselines/GB_Regressor.pkl")
 
     val_results = compute_ensemble_predictions(val_meta, X_val, y_val, rf, gb)
+    val_sharpe, _ = sharpe_from_signals(val_results, threshold=0.001)
+
     test_results = compute_ensemble_predictions(test_meta, X_test, y_test, rf, gb)
 
+    print("Validation Sharpe:", round(val_sharpe, 3))
     print("Validation ensemble rows:", len(val_results))
     print("Test ensemble rows:", len(test_results))
 
