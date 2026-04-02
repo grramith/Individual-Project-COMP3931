@@ -1,3 +1,5 @@
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 
@@ -20,8 +22,35 @@ class LSTMRegressor(nn.Module):
         self.fc = nn.Linear(hidden_size, 1)
     
     def forward(self, x):
-        # x shape: (batch, seq_len, features)
         lstm_out, _ = self.lstm(x)
         last_hidden = lstm_out[:, -1, :]
         out = self.dropout(last_hidden)
         return self.fc(out).squeeze(-1)
+
+def create_sequences_per_ticker(X, y, metadata, seq_len):
+    """
+    Create sequences within each ticker separately so windows
+    do not mix rows from different stocks.
+    """
+    sequences, targets, meta_rows = [], [], []
+    tickers = metadata["Ticker"].unique()
+
+    for ticker in tickers:
+        mask = metadata["Ticker"].values == ticker
+        X_tick = X[mask]
+        y_tick = y[mask]
+        meta_tick = metadata[mask].reset_index(drop=True)
+
+        for i in range(seq_len, len(X_tick)):
+            sequences.append(X_tick[i - seq_len:i])
+            targets.append(y_tick[i])
+            meta_rows.append({
+                "Date": meta_tick.iloc[i]["Date"],
+                "Ticker": ticker
+            })
+
+    return (
+        np.array(sequences),
+        np.array(targets),
+        pd.DataFrame(meta_rows)
+    )
