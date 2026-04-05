@@ -116,8 +116,8 @@ def compute_ensemble_predictions(
             # Estimate recent model bias and remove it from the next prediction
             bias_rf = float(np.dot(decay_w, hist_rf - hist_act))
             bias_gb = float(np.dot(decay_w, hist_gb - hist_act))
-            pred_rf_c = p_rf[t] - bias_rf
-            pred_gb_c = p_gb[t] - bias_gb
+            pred_rf_corrected = p_rf[t] - bias_rf
+            pred_gb_corrected = p_gb[t] - bias_gb
 
             # Score each model using both error size and sign accuracy
             ew_mae_rf  = float(np.dot(decay_w, np.abs(hist_rf - hist_act)))
@@ -134,12 +134,12 @@ def compute_ensemble_predictions(
                 raw_rf     = score_rf / total
                 raw_gb     = score_gb / total
                 raw_lstm   = 0.0
-                pred_lstm_c = 0.0
+                pred_lstm_corrected = 0.0
             
             # Otherwise include the LSTM in the same scoring logic
             else:
                 bias_lstm   = float(np.dot(decay_w, hist_lstm - hist_act))
-                pred_lstm_c = p_lstm[t] - bias_lstm
+                pred_lstm_corrected = p_lstm[t] - bias_lstm
                 ew_mae_lstm = float(np.dot(decay_w, np.abs(hist_lstm - hist_act)))
                 dir_lstm    = float(np.dot(decay_w, ((hist_lstm > 0) == (hist_act > 0)).astype(float)))
                 score_lstm  = 0.7 / (ew_mae_lstm + eps) + 0.3 * dir_lstm
@@ -160,9 +160,9 @@ def compute_ensemble_predictions(
             w_lstm[t] = sw_lstm / sw_sum
 
             # Combine the bias-corrected model predictions into the final ensemble output
-            ens_delta[t] = (w_rf[t]   * pred_rf_c +
-                            w_gb[t]   * pred_gb_c +
-                            w_lstm[t] * pred_lstm_c)
+            ens_delta[t] = (w_rf[t]   * pred_rf_corrected +
+                            w_gb[t]   * pred_gb_corrected +
+                            w_lstm[t] * pred_lstm_corrected)
 
         # Save the weights and ensemble prediction back into the ticker frame
         t_df["Weight_RF"]     = w_rf
