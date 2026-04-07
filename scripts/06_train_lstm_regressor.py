@@ -81,7 +81,7 @@ def train_lstm():
     meta_val = pd.read_csv("data/modeling/val_metadata.csv")
     meta_test = pd.read_csv("data/modeling/test_metadata.csv")
     
-     # Use the best available device on the current machine
+     # Use the best available device on the current machine (In this we don't actually use CUDA since all the code has been ran on Apple Silicon, but this is future-proofing for anyone who might want to run it on a GPU and for good coding practice))
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
