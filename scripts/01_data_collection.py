@@ -5,7 +5,7 @@ import pandas as pd
 # Configuration for the "Research Baseline"
 TICKERS = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'SPY']
 START_DATE = "2015-01-01"
-END_DATE = "2026-01-01"  # Ensures data stops at 2025-12-31
+END_DATE = "2025-12-31"  # Ensures data stops at 2025-12-31
 OUTPUT_PATH = "data/raw/prices.csv"
 
 def collect_prices():
