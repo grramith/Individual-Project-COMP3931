@@ -85,4 +85,85 @@ def diebold_mariano(e1, e2, h=1, loss="abs"):
     return float(dm_hln), float(p)
 
 
-print("DM test added")
+def pesaran_timmermann(pred, actual, null=0.5):
+    pred = np.asarray(pred)
+    actual = np.asarray(actual)
+    n = len(pred)
+
+    hit = ((pred > 0) == (actual > 0)).astype(int)
+    p_hat = hit.mean()
+
+    if null == 0.5:
+        py = (pred > 0).mean()
+        pa = (actual > 0).mean()
+        p_star = py * pa + (1 - py) * (1 - pa)
+
+        var_p_hat = p_star * (1 - p_star) / n
+        var_p_star = (
+            ((2 * py - 1) ** 2) * pa * (1 - pa) / n
+            + ((2 * pa - 1) ** 2) * py * (1 - py) / n
+            + 4 * py * pa * (1 - py) * (1 - pa) / n ** 2
+        )
+
+        denom = np.sqrt(max(var_p_hat - var_p_star, 1e-12))
+        z = (p_hat - p_star) / denom
+        p = 2 * (1 - sp_stats.norm.cdf(abs(z)))
+
+        return {
+            "hit_rate": float(p_hat),
+            "stat": float(z),
+            "p_value": float(p),
+            "test": "PT-1992",
+        }
+
+    successes = int(hit.sum())
+    result = sp_stats.binomtest(successes, n, p=null, alternative="greater")
+
+    return {
+        "hit_rate": float(p_hat),
+        "stat": float(successes),
+        "p_value": float(result.pvalue),
+        "test": f"Binomial>{null}",
+    }
+
+
+def sharpe_difference_test(r1, r2, periods=252):
+    r1 = np.asarray(r1)
+    r2 = np.asarray(r2)
+
+    n = min(len(r1), len(r2))
+    r1 = r1[-n:]
+    r2 = r2[-n:]
+
+    mu1, mu2 = r1.mean(), r2.mean()
+    s1, s2 = r1.std(ddof=1), r2.std(ddof=1)
+
+    if s1 == 0 or s2 == 0:
+        return {"sr1": 0.0, "sr2": 0.0, "diff": 0.0, "z": 0.0, "p_value": 1.0}
+
+    sr1_d = mu1 / s1
+    sr2_d = mu2 / s2
+    corr = np.corrcoef(r1, r2)[0, 1]
+
+    var = (1 / n) * (
+        2 - 2 * corr +
+        0.5 * (sr1_d ** 2 + sr2_d ** 2 - 2 * sr1_d * sr2_d * corr ** 2)
+    )
+    var = max(var, 1e-12)
+
+    z = (sr1_d - sr2_d) / np.sqrt(var)
+    p = 2 * (1 - sp_stats.norm.cdf(abs(z)))
+
+    sr1_ann = sr1_d * np.sqrt(periods)
+    sr2_ann = sr2_d * np.sqrt(periods)
+
+    return {
+        "sr1": float(sr1_ann),
+        "sr2": float(sr2_ann),
+        "diff": float(sr1_ann - sr2_ann),
+        "z": float(z),
+        "p_value": float(p),
+    }
+
+
+print("Directional and Sharpe tests added")
