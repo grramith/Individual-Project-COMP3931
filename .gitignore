@@ -21,4 +21,4 @@
 data/
 models/
 # Temporarily exclude test suite
-tests/
+tests/scripts/07_inverse.py
