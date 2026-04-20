@@ -1,24 +1,27 @@
-import os
-from pathlib import Path
+import numpy as np
 
-def _find_project_root():
-    sentinel_dirs = {'data', 'scripts', 'models'}
-    candidate = Path.cwd().resolve()
-    while True:
-        children = {p.name for p in candidate.iterdir() if p.is_dir()}
-        if sentinel_dirs <= children:
-            return candidate
-        if candidate.parent == candidate:
-            raise RuntimeError("Could not locate project root (need data/, scripts/, models/)")
-        candidate = candidate.parent
+def sharpe_annualised(rets, periods=TRADING_DAYS):
+    rets = np.asarray(rets)
+    if len(rets) == 0 or np.std(rets, ddof=1) == 0:
+        return 0.0
+    return (np.mean(rets) / np.std(rets, ddof=1)) * np.sqrt(periods)
 
-PROJECT_ROOT = _find_project_root()
-os.chdir(PROJECT_ROOT)
-print(f"Project root: {PROJECT_ROOT}")
+def sortino_annualised(rets, periods=TRADING_DAYS):
+    rets = np.asarray(rets)
+    downside = rets[rets < 0]
+    if len(downside) == 0 or np.std(downside, ddof=1) == 0:
+        return 0.0
+    return (np.mean(rets) / np.std(downside, ddof=1)) * np.sqrt(periods)
 
-EVAL_DIR = "data/results/evaluation"
-os.makedirs(EVAL_DIR, exist_ok=True)
+def max_drawdown(equity):
+    equity = np.asarray(equity)
+    peak = np.maximum.accumulate(equity)
+    dd = (equity - peak) / peak
+    return float(dd.min())
 
-TRADING_DAYS = 252
-TX_COST_DEFAULT = 0.0005
-INITIAL_CAPITAL = 1000.0
+def calmar_ratio(rets, equity, periods=TRADING_DAYS):
+    ann_ret = np.mean(rets) * periods
+    mdd = abs(max_drawdown(equity))
+    if mdd == 0:
+        return 0.0
+    return ann_ret / mdd
