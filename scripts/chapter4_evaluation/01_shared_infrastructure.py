@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore")
 
 # Walk up from cwd until we hit the project root, so the notebook runs from any subdir
 def _find_project_root():
-    """Walk upward until we find a parent containing data/, scripts/, models/."""
+
     sentinel_dirs = {'data', 'scripts', 'models'}
     candidate = Path.cwd().resolve()
     while True:

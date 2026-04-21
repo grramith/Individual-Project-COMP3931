@@ -1,25 +1,4 @@
-"""
-07_inverse.py — HDE with inverse-variance (Bates-Granger) weighting.
 
-This is a drop-in replacement for the original 07_*.py. Only the
-`compute_ensemble_predictions` function has changed; `LSTMRegressor`,
-`sharpe_from_signals`, `build_enhanced_hde`, and all I/O behaviour are
-identical to the original so the evaluation notebook works unchanged.
-
-WHAT CHANGED vs the MAE-based version:
-  - Scoring step: instead of score = 0.7/MAE + 0.3*DirAcc, we estimate
-    the 3x3 covariance matrix of recent residuals across constituents
-    and solve Bates-Granger (1969): w = Sigma^-1 * 1 / (1' * Sigma^-1 * 1).
-  - Diagonal shrinkage (lambda=0.3) to regularise a covariance estimated
-    from only `window` observations.
-  - Simplex projection (clip negatives, renormalise) so weights stay in
-    [0, 1] and the overlay logic downstream works unchanged.
-  - Fallbacks to equal weights on singular Sigma or degenerate inputs.
-
-WHAT STAYED IDENTICAL (for strict A/B fairness):
-  - window, decay, weight_smooth_alpha, per-ticker loop, bias correction,
-    warm-up period, LSTM-missing 2-model fallback.
-"""
 
 import numpy as np
 import pandas as pd
@@ -62,11 +41,6 @@ def compute_ensemble_predictions(
     window=10, decay=0.95, weight_smooth_alpha=0.30,
     shrinkage=0.3,
 ):
-    """
-    Dynamic ensemble using inverse-variance (Bates-Granger) weighting on
-    recent residuals, with diagonal shrinkage, simplex projection, rolling
-    bias correction, and EMA smoothing of weights.
-    """
 
     eps = 1e-6
 
@@ -179,10 +153,7 @@ def compute_ensemble_predictions(
 
 
 def _bates_granger_weights(R, decay_w, shrinkage, eps):
-    """
-    Inverse-variance weights from residual matrix R of shape (window, K)
-    with decay weights over rows. Returns a length-K simplex vector.
-    """
+
     K = R.shape[1]
     ones = np.ones(K)
 
@@ -227,14 +198,7 @@ def _bates_granger_weights(R, decay_w, shrinkage, eps):
 def sharpe_from_signals(results_df, threshold, vix_low, vix_high,
                         use_fractional, allow_short, dd_limit,
                         pos_scale=1, tx_cost=0.0005):
-    """
-    Simulate a backtest and return the portfolio Sharpe ratio.
 
-    Multi-level VIX regime:
-        VIX <= vix_low           --> base threshold
-        vix_low < VIX <= vix_high --> threshold * 1.5
-        VIX > vix_high           --> threshold * 3.0
-    """
     all_rets = []
 
     for ticker in results_df["Ticker"].unique():

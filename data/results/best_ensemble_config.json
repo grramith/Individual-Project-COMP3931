@@ -1,11 +1,11 @@
 {
   "window": 10,
   "decay": 0.9,
-  "threshold": 0.0,
-  "fractional": true,
+  "threshold": 0.0005,
+  "fractional": false,
   "allow_short": false,
   "dd_limit": 0.2,
   "vix_low": 16.6,
   "vix_high": 22.55,
-  "val_sharpe": 2.341469188693057
+  "val_sharpe": 2.2005309840062712
 }

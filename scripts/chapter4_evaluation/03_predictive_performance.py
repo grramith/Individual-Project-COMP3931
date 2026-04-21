@@ -1,25 +1,20 @@
 
 # Strategy builders - each returns a preds_df shaped for run_backtest
 def preds_for_model(col_name):
-    """Build a preds_df using the named prediction column."""
     df = PREDS[["Date", "Ticker", "Actual", "VIX_Value", col_name]].copy()
     df.rename(columns={col_name: "Prediction"}, inplace=True)
     return df.dropna(subset=["Prediction"])
 
 
 def build_buy_and_hold():
-    """Always-long-everything baseline. Prediction ≡ +1."""
+
     df = PREDS[["Date", "Ticker", "Actual", "VIX_Value"]].copy()
     df["Prediction"] = 1.0
     return df
 
 
 def build_momentum_12_1():
-    """
-    12-1 cross-sectional momentum:
-    use trailing 12-month return excluding the most recent month as the signal.
-    Requires the master dataset for the history before the test window.
-    """
+
     master = pd.read_csv("data/processed/master_dataset.csv", parse_dates=["Date"])
     # fall back to Target_Return if the daily return column isn't present
     ret_col = "Return_1d" if "Return_1d" in master.columns else "Target_Return"
@@ -41,18 +36,14 @@ def build_momentum_12_1():
 
 
 def build_equal_weight_ensemble():
-    """
-    Static equal-weight ensemble of the same three HDE constituents,
-    constructed post-hoc from the individual model predictions.
-    Uses the SAME overlay as HDE. This is the critical §4.5 comparator.
-    """
+
     df = PREDS[["Date", "Ticker", "Actual", "VIX_Value",
                 "Pred_RF", "Pred_GB", "Pred_LSTM"]].copy()
     df["Prediction"] = df[["Pred_RF", "Pred_GB", "Pred_LSTM"]].mean(axis=1)
     return df.dropna(subset=["Prediction"])
 
 def build_table_4_1():
-    """Per-model MAE, directional accuracy, R² with bootstrap CIs."""
+
     print("\n" + "=" * 78)
     print("TABLE 4.1 — Predictive Performance (95% block bootstrap CIs)")
     print("=" * 78)
@@ -235,7 +226,6 @@ TABLE_4_1, DM_MATRIX, FORECAST_ERRORS = build_table_4_1()
 
 # Table 4.2 - the baseline ladder
 def run_strategy(label, preds_df, **override):
-    """Run strategy through the shared engine with the tuned HDE config."""
     kwargs = dict(
         threshold=HDE_CONFIG["threshold"],
         vix_low=HDE_CONFIG["vix_low"],

@@ -1,9 +1,9 @@
 Threshold,VIX_filter,Taper,Sharpe,Max_DD_%,Total_Return_%,Exposure_%
-False,False,False,1.22,-22.0,43.5,59.3
-False,False,True,1.1,-18.97,33.4,52.9
-False,True,False,1.22,-22.0,43.5,59.3
-False,True,True,1.1,-18.97,33.4,52.9
-True,False,False,1.22,-22.0,43.5,59.3
-True,False,True,1.1,-18.97,33.4,52.9
-True,True,False,1.22,-22.0,43.5,59.3
-True,True,True,1.1,-18.97,33.4,52.9
+False,False,False,1.298,-21.12,46.5,59.0
+False,False,True,1.134,-18.47,34.7,53.4
+False,True,False,1.298,-21.12,46.5,59.0
+False,True,True,1.134,-18.47,34.7,53.4
+True,False,False,1.329,-20.04,46.2,56.1
+True,False,True,1.178,-17.8,35.8,51.9
+True,True,False,1.244,-20.28,42.2,55.4
+True,True,True,1.087,-18.0,32.2,51.2

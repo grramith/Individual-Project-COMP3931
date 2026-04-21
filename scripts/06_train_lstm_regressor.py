@@ -11,10 +11,7 @@ import time
 
 
 class LSTMRegressor(nn.Module):
-    """
-    Two-layer LSTM for daily return prediction.
-    Dropout is used to help control overfitting.
-    """
+
     def __init__(self, input_size, hidden_size=64, num_layers=2, dropout=0.3):
         super().__init__()
         self.lstm = nn.LSTM(
@@ -36,10 +33,7 @@ class LSTMRegressor(nn.Module):
         return self.fc(out).squeeze(-1)
 
 def create_sequences_per_ticker(X, y, metadata, seq_len):
-    """
-    Build sequences separately for each ticker so time windows
-    stay within the same stock.
-    """
+
     sequences, targets, meta_rows = [], [], []
     
     # Group by ticker

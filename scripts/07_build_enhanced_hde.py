@@ -36,22 +36,6 @@ def compute_ensemble_predictions(
     lstm_preds, lstm_meta,
     window=10, decay=0.95, weight_smooth_alpha=0.15
 ):
-    """
-    Dynamic ensemble with exponentially-decayed weighting, directional-accuracy
-    scoring, rolling bias correction, and EMA weight smoothing.
-
-    Parameters are as follows:
-
-    window : int
-        Rolling window length for error history.
-    decay : float
-        Exponential decay factor (0 < decay <= 1). Values < 1 down-weight
-        older observations so the ensemble reacts faster to regime shifts.
-        decay=1.0 reduces to a uniform rolling average.
-    weight_smooth_alpha : float
-        EMA alpha for weight smoothing. Larger values track changes faster
-        but make the weights noisier.
-    """
 
     eps = 1e-6
 
@@ -177,21 +161,8 @@ def compute_ensemble_predictions(
 # Simulate trading signals from the ensemble predictions
 def sharpe_from_signals(results_df, threshold, vix_low, vix_high,
                         use_fractional, allow_short, dd_limit,
+                        use_vix_filter=True, use_taper=True,
                         pos_scale=1, tx_cost=0.0005):
-    """
-    Simulate a backtest and return the portfolio Sharpe ratio.
-
-    Multi-level VIX regime:
-        VIX <= vix_low   --> low regime  : base threshold
-        vix_low < VIX <= vix_high --> elevated regime : threshold * 1.5
-        VIX > vix_high   --> high regime : threshold * 3.0
-
-    
-    Personal note for Short selling:
-
-        When allow_short=True, take a fractional short when the prediction
-        is strongly negative.
-    """
     all_rets = []
 
     # Backtest each ticker separately before combining daily portfolio returns
@@ -207,16 +178,21 @@ def sharpe_from_signals(results_df, threshold, vix_low, vix_high,
         peak       = 1.0
         strat_rets = np.zeros(n)
 
-        # Use yesterday's prediction to decide today's position
+# Use yesterday's prediction to decide today's position
         for i in range(1, n):
             p   = pred[i - 1]
             v   = vix[i - 1]
 
-            # Increase the threshold in more volatile VIX regimes
-            if v > vix_high:
-                eff_threshold = threshold * 3.0
-            elif v > vix_low:
-                eff_threshold = threshold * 1.5
+            # Compute the effective threshold. The VIX filter only scales the
+            # threshold when use_vix_filter=True; otherwise the raw threshold
+            # applies uniformly regardless of the VIX regime.
+            if use_vix_filter:
+                if v > vix_high:
+                    eff_threshold = threshold * 3.0
+                elif v > vix_low:
+                    eff_threshold = threshold * 1.5
+                else:
+                    eff_threshold = threshold
             else:
                 eff_threshold = threshold
 
@@ -237,10 +213,11 @@ def sharpe_from_signals(results_df, threshold, vix_low, vix_high,
                     position[i] = 0.0
 
             # Reduce exposure if the running drawdown breaches the chosen limit
-            dd = (equity[-1] - peak) / peak if peak > 0 else 0
-            if dd < -dd_limit:
-                severity = min((abs(dd) - dd_limit) / dd_limit, 1.0)
-                position[i] *= max(1.0 - severity, 0.0)
+            if use_taper:
+                dd = (equity[-1] - peak) / peak if peak > 0 else 0
+                if dd < -dd_limit:
+                    severity = min((abs(dd) - dd_limit) / dd_limit, 1.0)
+                    position[i] *= max(1.0 - severity, 0.0)
 
              # Apply transaction costs whenever the position changes
             pos_change  = abs(position[i] - position[i - 1])
@@ -358,7 +335,7 @@ def build_enhanced_hde():
          "dd_limit": dd}
         for w  in [10, 20, 30]
         for d  in [0.90, 0.95, 1.00]
-        for th in [0.0, 0.0005, 0.001, 0.002]
+        for th in [0.0005, 0.001, 0.002]
         for fr in [True, False]
         for sh in [True, False]
         for dd in [0.10, 0.15, 0.20]

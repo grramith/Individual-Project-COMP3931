@@ -1,15 +1,3 @@
-"""
-Sensitivity analysis for two fixed parameters in the HDE framework:
-  1. MAE/DirAcc score blend ratio (default 0.7/0.3)
-  2. EMA weight smoothing alpha   (default 0.15)
-
-Both parameters were fixed a priori in the main grid search to keep the
-search space tractable. This script sweeps over a small range of values for
-each one to confirm that the chosen defaults are not fragile design choices.
-
-Run from project root:  python scripts/sensitivity_check.py
-"""
-
 import numpy as np
 import pandas as pd
 import joblib
