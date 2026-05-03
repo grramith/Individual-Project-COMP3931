@@ -178,3 +178,168 @@ def regime_regression(eval_dir):
     regimes.to_csv(f"{eval_dir}/regime_features.csv", index=False)
     uni_table.to_csv(f"{eval_dir}/regime_regression.csv", index=False)
     return regimes, uni_table
+
+
+# Phase 6 - per-ticker alpha. One-sample t-test against zero across tickers
+def per_ticker_alpha(strategies, eval_dir):
+    print("\n" + "=" * 78)
+    print("4.3.3 — Per-ticker alpha cross-sectional test")
+    print("=" * 78)
+    hde = strategies["e_HDE"]["combined"]
+    bh = strategies["a_BuyHold"]["combined"]
+
+    rows = []
+    for ticker in hde["Ticker"].unique():
+        h = hde[hde["Ticker"] == ticker]
+        b = bh[bh["Ticker"] == ticker]
+        m = h[["Date", "Strategy_Ret"]].merge(
+            b[["Date", "Strategy_Ret"]], on="Date", suffixes=("_hde", "_bh"))
+        alpha_series = m["Strategy_Ret_hde"] - m["Strategy_Ret_bh"]
+        mean_alpha_ann = alpha_series.mean() * 252
+        t_stat, p_val = sp_stats.ttest_1samp(alpha_series, 0.0)
+        rows.append({
+            "Ticker": ticker,
+            "Annualised_Alpha_%": round(mean_alpha_ann * 100, 2),
+            "t_stat": round(t_stat, 3),
+            "p_value": round(p_val, 4),
+        })
+    table = pd.DataFrame(rows)
+    print(table.to_string(index=False))
+
+    # Cross-sectional t-test - tests whether the average alpha across tickers is distinguishable from zero
+    alphas = table["Annualised_Alpha_%"].values
+    t_cs, p_cs = sp_stats.ttest_1samp(alphas, 0.0)
+    print(f"\nCross-sectional mean alpha: {alphas.mean():.2f}%  "
+          f"t={t_cs:.3f}  p={p_cs:.4f}")
+    if p_cs > 0.05:
+        print("  → Mean per-ticker alpha is NOT distinguishable from zero.")
+        print("     The HDE's cross-sectional contribution is not statistically")
+        print("     separable from a zero-alpha strategy after accounting for")
+        print("     cross-sectional variance.")
+
+    table.to_csv(f"{eval_dir}/per_ticker_alpha.csv", index=False)
+    return table
+
+
+# Phase 6 - sweep transaction costs from 0 to 30 bps to check the strategy's break-even point
+def tx_cost_sensitivity(eval_dir):
+    print("\n" + "=" * 78)
+    print("4.3 — Transaction cost sensitivity (HDE)")
+    print("=" * 78)
+    hde_preds = preds_for_model("Pred_HDE")
+    rows = []
+    for bps in [0, 5, 10, 15, 20, 30]:
+        res = run_strategy(f"{bps} bps", hde_preds, tx_cost=bps / 10000)
+        s = res["stats"]
+        rows.append({
+            "TX_cost_bps": bps,
+            "Total_Return_%": round(s["total_return_pct"], 1),
+            "Sharpe": round(s["sharpe"], 3),
+            "Max_DD_%": round(s["max_drawdown"] * 100, 1),
+        })
+    table = pd.DataFrame(rows)
+    print(table.to_string(index=False))
+    table.to_csv(f"{eval_dir}/tx_cost_sensitivity.csv", index=False)
+    return table
+
+
+# Phase 7 - display items for the chapter
+def build_display_items(strategies, regimes, regime_regression_table, eval_dir):
+    print("\n" + "=" * 78)
+    print("Phase 7 — Display items")
+    print("=" * 78)
+
+    # Figure 4.2 - rolling 60-day Sharpe across the three headline strategies
+    hde_port = strategies["e_HDE"]["portfolio"]
+    eq_port = strategies["d_EqualWeight"]["portfolio"]
+    bh_port = strategies["a_BuyHold"]["portfolio"]
+
+    def rolling_sharpe(s, window=60):
+        return s.rolling(window).mean() / s.rolling(window).std() * np.sqrt(252)
+
+    merged = hde_port[["Date", "Strategy_Ret"]].rename(
+        columns={"Strategy_Ret": "HDE"}).merge(
+        eq_port[["Date", "Strategy_Ret"]].rename(
+            columns={"Strategy_Ret": "EqualWt"}),
+        on="Date", how="inner").merge(
+        bh_port[["Date", "Strategy_Ret"]].rename(
+            columns={"Strategy_Ret": "BuyHold"}),
+        on="Date", how="inner")
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(merged["Date"], rolling_sharpe(merged["HDE"]),
+            label="Full HDE", color="#2563eb", lw=1.5)
+    ax.plot(merged["Date"], rolling_sharpe(merged["EqualWt"]),
+            label="Equal-weight static ensemble", color="#ef4444", lw=1.5, ls="--")
+    ax.plot(merged["Date"], rolling_sharpe(merged["BuyHold"]),
+            label="Buy & Hold", color="gray", lw=1.5, alpha=0.7)
+    ax.axhline(0, color="black", lw=0.5)
+    ax.set_title("Figure 4.2 — 60-day rolling Sharpe ratio comparison",
+                 fontweight="bold")
+    ax.set_ylabel("Rolling Sharpe (annualised)")
+    ax.set_xlabel("Date")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{eval_dir}/figure_4_2_rolling_sharpe.png", dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"Saved → {eval_dir}/figure_4_2_rolling_sharpe.png")
+
+    # Figure 4.3 - directional accuracy against whichever regime variable explained the most variance
+    if regimes is not None and regime_regression_table is not None and len(regime_regression_table):
+        top_var = regime_regression_table.iloc[0]["Variable"]
+        fig, ax = plt.subplots(figsize=(9, 6))
+
+        ax.scatter(regimes[top_var], regimes["DirAcc"] * 100, s=100, color="#2563eb")
+
+        for _, r in regimes.iterrows():
+            ax.annotate(
+                pd.Timestamp(r["Window_Start"]).strftime("%Y-%m"),
+                (r[top_var], r["DirAcc"] * 100),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8
+            )
+
+        x = regimes[top_var].values
+        y = regimes["DirAcc"].values * 100
+
+        if len(x) >= 2:
+            coef = np.polyfit(x, y, 1)
+            xs = np.linspace(x.min(), x.max(), 50)
+            ax.plot(
+                xs,
+                np.polyval(coef, xs),
+                ls="--",
+                color="red",
+                alpha=0.7,
+                label=f"OLS Regression  R²={regime_regression_table.iloc[0]['R_squared']:.3f}"
+            )
+
+        ax.axhline(50, color="gray", lw=0.5, ls=":")
+        ax.axhline(53, color="gray", lw=0.5, ls=":", alpha=0.5)
+
+        ax.set_title(
+            "Walk-forward Directional Accuracy versus Mean VIX",
+            fontweight="bold"
+        )
+        ax.set_xlabel("Mean VIX")
+        ax.set_ylabel("Directional Accuracy (%)")
+
+        legend = ax.legend(
+            fontsize=9,
+            title="Key",
+            title_fontsize=10
+        )
+        legend.get_title().set_fontweight("bold")
+
+        ax.grid(True, alpha=0.3)
+
+        # Padding so edge points and labels sit inside the grid
+        ax.margins(x=0.08, y=0.08)
+
+        plt.tight_layout()
+        plt.savefig(f"{eval_dir}/figure_4_3_regime_scatter.png", dpi=300, bbox_inches="tight")
+        plt.close()
+
+        print(f"Saved → {eval_dir}/figure_4_3_regime_scatter.png")
