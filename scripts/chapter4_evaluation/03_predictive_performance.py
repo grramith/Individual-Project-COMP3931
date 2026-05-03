@@ -1,22 +1,23 @@
+# Builds Tables 4.1 and 4.2 from the shared prediction and backtest setup.
 
-# Strategy builders - each returns a preds_df shaped for run_backtest
+# Strategy builders all return the same schema expected by run_backtest().
 def preds_for_model(col_name):
+    # Use one prediction column at a time while keeping the shared metadata fixed.
     df = PREDS[["Date", "Ticker", "Actual", "VIX_Value", col_name]].copy()
     df.rename(columns={col_name: "Prediction"}, inplace=True)
     return df.dropna(subset=["Prediction"])
 
 
 def build_buy_and_hold():
-
+    # Constant positive signal gives the always-long benchmark.
     df = PREDS[["Date", "Ticker", "Actual", "VIX_Value"]].copy()
     df["Prediction"] = 1.0
     return df
 
 
 def build_momentum_12_1():
-
+    # Use 12-month momentum excluding the most recent month as a non-ML comparator.
     master = pd.read_csv("data/processed/master_dataset.csv", parse_dates=["Date"])
-    # fall back to Target_Return if the daily return column isn't present
     ret_col = "Return_1d" if "Return_1d" in master.columns else "Target_Return"
     frames = []
     for ticker in PREDS["Ticker"].unique():
@@ -30,20 +31,21 @@ def build_momentum_12_1():
         mom, on=["Date", "Ticker"], how="left"
     )
     df.rename(columns={"mom_12_1": "Prediction"}, inplace=True)
-    # Rescale annualised momentum to a daily-return-equivalent so the same threshold logic applies
+    # Put annual momentum onto a daily-return scale for the shared threshold rule.
     df["Prediction"] = df["Prediction"] / 252
     return df.dropna(subset=["Prediction"])
 
 
 def build_equal_weight_ensemble():
-
+    # Fixed 1/3 weights isolate whether dynamic weighting adds anything.
     df = PREDS[["Date", "Ticker", "Actual", "VIX_Value",
                 "Pred_RF", "Pred_GB", "Pred_LSTM"]].copy()
     df["Prediction"] = df[["Pred_RF", "Pred_GB", "Pred_LSTM"]].mean(axis=1)
     return df.dropna(subset=["Prediction"])
 
-def build_table_4_1():
 
+def build_table_4_1():
+    # Summarise forecast accuracy before adding the trading overlay.
     print("\n" + "=" * 78)
     print("TABLE 4.1 — Predictive Performance (95% block bootstrap CIs)")
     print("=" * 78)
@@ -63,7 +65,7 @@ def build_table_4_1():
         actual = sub["Actual"].values
         errs = sub["Error"].values
 
-        # store errors for the pairwise DM matrix below
+        # Keep dated errors so the DM tests compare aligned forecasts.
         errors[model] = sub[["Date", "Ticker", "Error"]].copy()
 
         abs_errs = np.abs(errs)
@@ -73,7 +75,7 @@ def build_table_4_1():
             abs_errs, np.mean, n_boot=5000, block_len=bl
         )
 
-        # paired bootstrap for directional accuracy - column-stack so blocks resample (pred, actual) jointly
+        # Resample prediction and actual together so directional accuracy stays paired.
         paired = np.column_stack([pred, actual])
 
         def dir_stat(p):
@@ -105,7 +107,7 @@ def build_table_4_1():
 
     table = pd.DataFrame(rows)
 
-    # Pairwise DM matrix - only on the intersection of (Date, Ticker) so error series are aligned
+    # Run DM tests only after aligning models on the same Date and Ticker rows.
     models = list(errors.keys())
     dm_p = pd.DataFrame(index=models, columns=models, dtype=float)
 
@@ -133,7 +135,7 @@ def build_table_4_1():
             )
             dm_p.loc[a, b] = p
 
-    # Restrict the PT test to traded days only - HDE's untraded days dilute the hit rate
+    # Traded-day accuracy is reported separately because flat days dilute the signal test.
     hde = PREDS[["Pred_HDE", "Actual"]].dropna()
     hde_traded = hde[hde["Pred_HDE"].abs() > HDE_CONFIG["threshold"]]
 
@@ -185,8 +187,9 @@ def build_table_4_1():
     dm_p.to_csv(f"{EVAL_DIR}/table_4_1_dm_matrix.csv")
     return table, dm_p, errors
 
-# Strict version of DM that errors out on length mismatches - safer than the Phase 1 version when the caller is responsible for alignment
+
 def diebold_mariano(e1, e2, h=1, loss="abs"):
+    # Fail loudly here because the caller should already have aligned the errors.
     e1, e2 = np.asarray(e1), np.asarray(e2)
 
     if len(e1) != len(e2):
@@ -224,8 +227,8 @@ def diebold_mariano(e1, e2, h=1, loss="abs"):
 TABLE_4_1, DM_MATRIX, FORECAST_ERRORS = build_table_4_1()
 
 
-# Table 4.2 - the baseline ladder
 def run_strategy(label, preds_df, **override):
+    # Start from the tuned HDE overlay, then override only when a baseline requires it.
     kwargs = dict(
         threshold=HDE_CONFIG["threshold"],
         vix_low=HDE_CONFIG["vix_low"],
@@ -241,13 +244,14 @@ def run_strategy(label, preds_df, **override):
 
 
 def build_table_4_2():
+    # Build the baseline ladder from passive exposure through the full HDE.
     print("\n" + "=" * 78)
     print("TABLE 4.2 — Baseline Ladder (95% CIs, paired tests vs HDE)")
     print("=" * 78)
 
     strategies = {}
 
-    # (a) Buy & Hold - all overlay flags off so the comparison isolates the prediction signal from the overlay
+    # Buy and Hold turns the overlay off so it remains a clean market benchmark.
     bh_preds = build_buy_and_hold()
     strategies["a_BuyHold"] = run_strategy(
         "Buy & Hold", bh_preds,
@@ -255,26 +259,25 @@ def build_table_4_2():
         use_taper=False, use_fractional=False, allow_short=False,
     )
 
-    # (b) 12-1 momentum - classic asset-pricing baseline, run through the same overlay as HDE
+    # Momentum gives a standard finance baseline under the same overlay.
     try:
         mom_preds = build_momentum_12_1()
         strategies["b_Momentum"] = run_strategy("12-1 Momentum", mom_preds)
     except Exception as e:
         print(f"  [warn] momentum baseline failed: {e}")
 
-    # (c) Linear regression predictions - tests whether overlay-on-OLS is enough
+    # OLS checks whether a simple linear signal benefits from the overlay.
     if "Pred_Linear" in PREDS.columns and not PREDS["Pred_Linear"].isna().all():
         strategies["c_OLS_overlay"] = run_strategy(
             "OLS + overlay", preds_for_model("Pred_Linear"))
 
-    # (d) Equal-weight ensemble - same constituents as HDE but fixed 1/3 weights, isolates the dynamic-weighting contribution
+    # Equal weighting keeps the HDE constituents but removes adaptive weighting.
     strategies["d_EqualWeight"] = run_strategy(
         "Equal-weight static ens.", build_equal_weight_ensemble())
 
-    # (e) Full HDE
+    # Full HDE is the proposed method.
     strategies["e_HDE"] = run_strategy("Full HDE", preds_for_model("Pred_HDE"))
 
-    # Summary table with bootstrap Sharpe CIs
     rows = []
     for key, res in strategies.items():
         s = res["stats"]
@@ -296,7 +299,7 @@ def build_table_4_2():
     table = pd.DataFrame(rows)
     print(table.to_string(index=False))
 
-    # Pairwise Sharpe tests against HDE - merged on Date so JKM gets paired returns
+    # Pair strategies by date before testing Sharpe differences.
     print("\nJobson–Korkie–Memmel Sharpe tests (vs Full HDE):")
     hde_rets = strategies["e_HDE"]["daily_returns"]
     pair_pvals = {}
@@ -313,7 +316,7 @@ def build_table_4_2():
               f"ΔSR={t['diff']:+.3f}  z={t['z']:+.2f}  p={t['p_value']:.4f}")
         pair_pvals[f"HDE_vs_{key}"] = t["p_value"]
 
-    # Holm correction across the four ladder comparisons - controls familywise error
+    # Holm correction keeps the ladder comparisons from being over-read.
     adj = holm_correction(pair_pvals)
     print("\nHolm-corrected p-values:")
     for k, v in adj.items():
