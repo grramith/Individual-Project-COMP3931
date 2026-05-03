@@ -137,7 +137,44 @@ def run_enhanced_backtest():
         final_returns.append(t_df)
 
     processed_df = pd.concat(final_returns)
-    return processed_df, per_stock_metrics, config, DD_LIMIT, INITIAL_CAPITAL
+
+    # Equal-weight aggregation across tickers gives the headline portfolio numbers
+    portfolio = processed_df.groupby('Date').agg({
+        'Actual': 'mean',
+        'Strategy_Ret': 'mean',
+        'Weight_RF': 'mean',
+        'Weight_GB': 'mean',
+        'Weight_LSTM': 'mean',
+        'Position': 'mean',
+    }).reset_index()
+
+    portfolio['Market_Cum'] = INITIAL_CAPITAL * (1 + portfolio['Actual']).cumprod()
+    portfolio['HDE_Cum'] = INITIAL_CAPITAL * (1 + portfolio['Strategy_Ret']).cumprod()
+
+    m_sharpe = calculate_sharpe(portfolio['Actual'])
+    s_sharpe = calculate_sharpe(portfolio['Strategy_Ret'])
+    m_dd = calculate_max_drawdown(portfolio['Market_Cum'])
+    s_dd = calculate_max_drawdown(portfolio['HDE_Cum'])
+    portfolio_hit = (processed_df[processed_df['Position'] > 0]['Actual'] > 0).mean()
+    total_market = (portfolio['Market_Cum'].iloc[-1] / INITIAL_CAPITAL - 1) * 100
+    total_strat = (portfolio['HDE_Cum'].iloc[-1] / INITIAL_CAPITAL - 1) * 100
+    avg_exposure = portfolio['Position'].mean()
+
+    print(f'\n{"=" * 70}')
+    print(f'PORTFOLIO RESULTS')
+    print(f'{"=" * 70}')
+    print(f'{"Metric":<25} {"Buy & Hold":>15} {"HDE v2":>15}')
+    print(f'{"-"*55}')
+    print(f'{"Total Return":<25} {total_market:>14.1f}% {total_strat:>14.1f}%')
+    print(f'{"Sharpe Ratio":<25} {m_sharpe:>15.2f} {s_sharpe:>15.2f}')
+    print(f'{"Max Drawdown":<25} {m_dd:>14.1%} {s_dd:>14.1%}')
+    print(f'{"Hit Rate":<25} {"N/A":>15} {portfolio_hit:>14.1%}')
+    print(f'{"Avg Exposure":<25} {"100%":>15} {avg_exposure:>14.1%}')
+
+    return (processed_df, portfolio, per_stock_metrics, config,
+            DD_LIMIT, INITIAL_CAPITAL,
+            m_sharpe, s_sharpe, m_dd, s_dd,
+            portfolio_hit, total_market, total_strat, avg_exposure)
 
 
 if __name__ == '__main__':
