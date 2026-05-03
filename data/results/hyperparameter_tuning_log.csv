@@ -1,13 +1,13 @@
 model,params,val_mae
-Ridge_Regression,{'alpha': 0.01},0.016912961351442025
-Ridge_Regression,{'alpha': 0.1},0.0169129762685385
-Ridge_Regression,{'alpha': 1.0},0.016913122276549702
-Ridge_Regression,{'alpha': 10.0},0.016914306672909076
-RF_Regressor,"{'n_estimators': 100, 'max_depth': 5, 'random_state': 42}",0.01659219801834188
-RF_Regressor,"{'n_estimators': 200, 'max_depth': 10, 'random_state': 42}",0.017950969533176007
-RF_Regressor,"{'n_estimators': 200, 'max_depth': 15, 'random_state': 42}",0.019077341423519183
-RF_Regressor,"{'n_estimators': 300, 'max_depth': 10, 'min_samples_leaf': 10, 'random_state': 42}",0.01904147812991841
-GB_Regressor,"{'n_estimators': 100, 'max_depth': 3, 'learning_rate': 0.1, 'random_state': 42}",0.019304087344144776
-GB_Regressor,"{'n_estimators': 200, 'max_depth': 3, 'learning_rate': 0.05, 'random_state': 42}",0.020104517363817194
-GB_Regressor,"{'n_estimators': 200, 'max_depth': 5, 'learning_rate': 0.05, 'random_state': 42}",0.02099513490037016
-GB_Regressor,"{'n_estimators': 300, 'max_depth': 4, 'learning_rate': 0.01, 'random_state': 42}",0.01749916343589584
+Ridge_Regression,{'alpha': 0.01},0.01691296392363195
+Ridge_Regression,{'alpha': 0.1},0.016912978840663173
+Ridge_Regression,{'alpha': 1.0},0.016913124848031594
+Ridge_Regression,{'alpha': 10.0},0.016914309238812635
+RF_Regressor,"{'n_estimators': 100, 'max_depth': 5, 'random_state': 42}",0.01659718400598634
+RF_Regressor,"{'n_estimators': 200, 'max_depth': 10, 'random_state': 42}",0.01793687405360948
+RF_Regressor,"{'n_estimators': 200, 'max_depth': 15, 'random_state': 42}",0.019117993735809698
+RF_Regressor,"{'n_estimators': 300, 'max_depth': 10, 'min_samples_leaf': 10, 'random_state': 42}",0.019051431825838974
+GB_Regressor,"{'n_estimators': 100, 'max_depth': 3, 'learning_rate': 0.1, 'random_state': 42}",0.0192743677577691
+GB_Regressor,"{'n_estimators': 200, 'max_depth': 3, 'learning_rate': 0.05, 'random_state': 42}",0.020045400175209182
+GB_Regressor,"{'n_estimators': 200, 'max_depth': 5, 'learning_rate': 0.05, 'random_state': 42}",0.020961714076670985
+GB_Regressor,"{'n_estimators': 300, 'max_depth': 4, 'learning_rate': 0.01, 'random_state': 42}",0.017516298480543924
