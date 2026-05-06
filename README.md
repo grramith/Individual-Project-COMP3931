@@ -324,14 +324,14 @@ The tests use small synthetic examples rather than the full dataset. They run qu
 
 ## Known Limitations
 
-**Dynamic weighting barely moves.** The main takeaway from the project is that the adaptive weighting mechanism settles near uniform weights (roughly 1/3 each for RF, GB, and LSTM) and stays there. The "dynamic" part adds little over a plain equal-weight ensemble on this dataset.
+**Dynamic weighting barely moves:** The main takeaway from the project is that the adaptive weighting mechanism settles near uniform weights (roughly 1/3 each for RF, GB, and LSTM) and stays there. The "dynamic" part adds little over a plain equal-weight ensemble on this dataset.
 
-**LSTM warm-up gap.** For the first `seq_len` trading days of the test period, LSTM predictions do not exist. The ensemble falls back to RF and GB during that window, which creates a small inconsistency in the earliest test-set predictions.
+**LSTM warm-up gap:** For the first `seq_len` trading days of the test period, LSTM predictions do not exist. The ensemble falls back to RF and GB during that window, which creates a small inconsistency in the earliest test-set predictions.
 
-**FRED API key needed for macro data.** Script 02 will not run without a valid FRED API key in `.env`. If you have an existing `macro_fred.csv`, drop it into `data/raw/` and start from script 03.
+**FRED API key needed for macro data:** Script 02 will not run without a valid FRED API key in `.env`. If you have an existing `macro_fred.csv`, drop it into `data/raw/` and start from script 03.
 
-**Models and raw data are not in the repo.** The repository ships with result CSVs and evaluation outputs. The trained `.pkl` and `.pth` files and the raw downloaded data are all gitignored. A clean run from scratch needs internet access for yfinance and FRED, and takes roughly 20 to 40 minutes. The LSTM tuning step is the slowest part.
+**Models and raw data are not in the repo:** The repository ships with result CSVs and evaluation outputs. The trained `.pkl` and `.pth` files and the raw downloaded data are all gitignored. A clean run from scratch needs internet access for yfinance and FRED, and takes roughly 20 to 40 minutes. The LSTM tuning step is the slowest part.
 
-**The test window is one bull-market year.** The backtest only covers 2024, which was an unusually strong year for the Magnificent Seven. Buy-and-hold benefits a lot from that. Testing across a longer window with different regimes would likely give a fairer comparison.
+**The test window is one bull-market year:** The backtest only covers 2024, which was an unusually strong year for the Magnificent Seven. Buy-and-hold benefits a lot from that. Testing across a longer window with different regimes would likely give a fairer comparison.
 
-**No live trading.** This is a research pipeline. There is no order management, slippage modelling, or live data feed.
+**No live trading:** This is a research pipeline. There is no order management, slippage modelling, or live data feed.
