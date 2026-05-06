@@ -1,5 +1,4 @@
-# Phase 1 - inferential toolbox
-# Tests used by the chapter: block bootstrap, Diebold-Mariano, Pesaran-Timmermann, JKM Sharpe, Holm
+# stats helpers: block bootstrap, DM, PT, JKM Sharpe, Holm
 
 import numpy as np
 import pandas as pd
@@ -7,7 +6,7 @@ from scipy import stats as sp_stats
 
 TRADING_DAYS = 252
 
-# Pick block length from the first ACF zero-crossing instead of a fixed value
+# block length from first ACF zero-crossing
 def select_block_length(x, max_lag=40):
 
     x = np.asarray(x) - np.mean(x)
@@ -34,7 +33,7 @@ def block_bootstrap(x, statistic, n_boot=10000, block_len=None, ci=0.95, seed=42
     p = 1.0 / block_len
     boot_stats = np.empty(n_boot)
 
-    # Geometric block lengths keep the local serial dependence
+    # geometric block lengths preserve serial structure
     for b in range(n_boot):
         idx = np.empty(n, dtype=np.int64)
         i = 0
@@ -53,7 +52,7 @@ def block_bootstrap(x, statistic, n_boot=10000, block_len=None, ci=0.95, seed=42
     return point, (float(lo), float(hi)), boot_stats
 
 
-# DM test with HLN small-sample correction
+# DM test, HLN-corrected
 def diebold_mariano(e1, e2, h=1, loss="abs"):
 
     e1, e2 = np.asarray(e1), np.asarray(e2)
@@ -67,7 +66,7 @@ def diebold_mariano(e1, e2, h=1, loss="abs"):
     T = len(d)
     d_bar = np.mean(d)
 
-    # HAC variance for autocorrelated loss differentials
+    # HAC variance
     gamma_0 = np.var(d, ddof=0)
     gamma = [gamma_0]
     for k in range(1, h):
@@ -77,16 +76,16 @@ def diebold_mariano(e1, e2, h=1, loss="abs"):
     var_d = max(var_d, 1e-12) / T
 
     dm = d_bar / np.sqrt(var_d)
-    # HLN finite-sample correction
+    # HLN correction
     hln_factor = np.sqrt((T + 1 - 2 * h + h * (h - 1) / T) / T)
     dm_hln = dm * hln_factor
 
-    # t-dist instead of normal under HLN
+    # t-dist tail
     p = 2 * (1 - sp_stats.t.cdf(abs(dm_hln), df=T - 1))
     return float(dm_hln), float(p)
 
 
-# PT test - are predicted and actual signs independent?
+# PT sign-independence test
 def pesaran_timmermann(pred, actual, null=0.5):
 
     pred, actual = np.asarray(pred), np.asarray(actual)
@@ -95,7 +94,7 @@ def pesaran_timmermann(pred, actual, null=0.5):
     p_hat = hit.mean()
 
     if null == 0.5:
-        # Standard PT formulation
+        # standard PT
         py = (pred > 0).mean()
         pa = (actual > 0).mean()
         p_star = py * pa + (1 - py) * (1 - pa)
@@ -109,18 +108,18 @@ def pesaran_timmermann(pred, actual, null=0.5):
         return {"hit_rate": float(p_hat), "stat": float(z), "p_value": float(p),
                 "test": "PT-1992"}
     else:
-        # Exact binomial is safer for non-0.5 nulls
+        # exact binomial for other nulls
         successes = int(hit.sum())
         result = sp_stats.binomtest(successes, n, p=null, alternative="greater")
         return {"hit_rate": float(p_hat), "stat": float(successes),
                 "p_value": float(result.pvalue), "test": f"Binomial>{null}"}
 
 
-# JKM Sharpe difference test (Memmel-corrected)
+# JKM/Memmel Sharpe diff test
 def sharpe_difference_test(r1, r2, periods=TRADING_DAYS):
 
     r1, r2 = np.asarray(r1), np.asarray(r2)
-    # Truncate to the same length so the comparison is paired
+    # pair them up
     n = min(len(r1), len(r2))
     r1, r2 = r1[-n:], r2[-n:]
 
@@ -134,7 +133,7 @@ def sharpe_difference_test(r1, r2, periods=TRADING_DAYS):
     corr = np.corrcoef(r1, r2)[0, 1]
     sigma12 = corr * s1 * s2
 
-    # Memmel-corrected variance of the Sharpe difference
+    # Memmel variance
     var = (1 / n) * (
         2 - 2 * corr +
         0.5 * (sr1_d ** 2 + sr2_d ** 2 - 2 * sr1_d * sr2_d * corr ** 2)
@@ -143,7 +142,7 @@ def sharpe_difference_test(r1, r2, periods=TRADING_DAYS):
     z = (sr1_d - sr2_d) / np.sqrt(var)
     p = 2 * (1 - sp_stats.norm.cdf(abs(z)))
 
-    # Annualise for the chapter tables
+    # annualise
     sr1_ann = sr1_d * np.sqrt(periods)
     sr2_ann = sr2_d * np.sqrt(periods)
     return {
@@ -155,7 +154,7 @@ def sharpe_difference_test(r1, r2, periods=TRADING_DAYS):
     }
 
 
-# Holm step-down - less conservative than Bonferroni
+# Holm step-down
 def holm_correction(p_dict, alpha=0.05):
 
     labels = list(p_dict.keys())

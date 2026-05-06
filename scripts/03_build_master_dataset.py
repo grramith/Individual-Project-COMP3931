@@ -2,14 +2,14 @@ import pandas as pd
 import numpy as np
 import os
 
-# Wilder-style RSI (Industry standard)
+# Wilder RSI
 def calculate_rsi_wilder(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
     avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    # small guard in case losses are zero for a stretch
+    # avoid divide by zero
     rs = avg_gain / avg_loss.replace(0, 1e-9)
     return 100 - (100 / (1 + rs))
 
@@ -21,11 +21,11 @@ def build_dataset():
         print("Error: Raw files not found.")
         return
 
-    # read both inputs once at the start
+    # load inputs
     prices = pd.read_csv(prices_path, index_col=0, parse_dates=True)
     macro = pd.read_csv(macro_path, index_col=0, parse_dates=True)
     
-    # use SPY as the market benchmark where available
+    # SPY as market proxy
     spy_ret = prices['SPY'].pct_change() if 'SPY' in prices.columns else None
     
     mag_7 = [t for t in ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA'] if t in prices.columns]
@@ -34,40 +34,39 @@ def build_dataset():
     print("Building Research-Grade Features")
 
     for ticker in mag_7:
-       # start from the adjusted close series for one stock
+        # one stock at a time
         df = pd.DataFrame(prices[ticker]).rename(columns={ticker: 'Adj_Close'})
-        
-        # basic return features
+
+        # returns
         df['Return_1d'] = df['Adj_Close'].pct_change()
-        df['Return_5d'] = df['Adj_Close'].pct_change(5)   # weekly rolling return
-        df['Return_21d'] = df['Adj_Close'].pct_change(21)  # monthly rolling return
+        df['Return_5d'] = df['Adj_Close'].pct_change(5)
+        df['Return_21d'] = df['Adj_Close'].pct_change(21)
         df['Market_Return'] = spy_ret
-        
-        # basic return features
+
+        # MA ratios
         df['MA10_Ratio'] = df['Adj_Close'] / df['Adj_Close'].rolling(window=10, min_periods=10).mean()
         df['MA50_Ratio'] = df['Adj_Close'] / df['Adj_Close'].rolling(window=50, min_periods=50).mean()
-                
-        # MACD and signal line
+
+        # MACD
         ema12 = df['Adj_Close'].ewm(span=12, adjust=False).mean()
         ema26 = df['Adj_Close'].ewm(span=26, adjust=False).mean()
         df['MACD'] = (ema12 - ema26) / df['Adj_Close']
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        
-         # momentum / overbought-oversold style indicator
+
+        # RSI
         df['RSI'] = calculate_rsi_wilder(df['Adj_Close'])
-        
-        # rolling volatility from daily returns
+
+        # 20d realised vol
         df['Vol_20d'] = df['Return_1d'].rolling(window=20, min_periods=20).std()
-        
-          # a simple momentum measure over the last 10 trading days
+
+        # 10d momentum
         df['Momentum_10d'] = df['Adj_Close'].pct_change(10)
-        
-        # forward fill so each day only sees the latest macro value already known
+
+        # ffill macro to avoid look-ahead
         df = df.join(macro, how='left').ffill()
-        
-       # binary version for up/down prediction
+
+        # next-day return + sign
         df['Target_Return'] = df['Return_1d'].shift(-1)
-        # Classification target: direction of next-day return
         df['Target_Direction'] = (df['Target_Return'] > 0).astype(int)
         
         df['Ticker'] = ticker
@@ -75,11 +74,11 @@ def build_dataset():
         
         final_dfs.append(df)
 
-    # stack all tickers together and keep the ordering tidy
+    # stack into one frame
     master_df = pd.concat(final_dfs, axis=0)
     master_df = master_df.sort_values(by=['Date', 'Ticker']).reset_index(drop=True)
     
-    # final clean before saving
+    # drop infs and NaNs
     master_df = master_df.replace([np.inf, -np.inf], np.nan).dropna()
 
     os.makedirs("data/processed", exist_ok=True)

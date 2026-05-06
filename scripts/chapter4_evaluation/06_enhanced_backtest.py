@@ -17,7 +17,7 @@ def calculate_sharpe(returns, periods=252):
     return (returns.mean() / returns.std()) * np.sqrt(periods)
 
 def run_enhanced_backtest():
-    # Need both the predictions and the tuned config
+    # need preds + config from script 07
     path = 'data/results/hde_final_results.csv'
     config_path = 'data/results/best_ensemble_config.json'
     if not os.path.exists(path) or not os.path.exists(config_path):
@@ -28,7 +28,7 @@ def run_enhanced_backtest():
     with open(config_path) as f:
         config = json.load(f)
 
-    # Older configs only have one vix_threshold key, so fall back to that
+    # back-compat for old configs
     THRESHOLD     = config['threshold']
     VIX_LOW       = config.get('vix_low', config.get('vix_threshold', 18.0))
     VIX_HIGH      = config.get('vix_high', config.get('vix_threshold', 22.0))
@@ -37,7 +37,7 @@ def run_enhanced_backtest():
     DD_LIMIT      = config['dd_limit']
     POS_SCALE     = config.get('pos_scale', 1)
     TX_COST       = 0.0005  # 5 bps
-    INITIAL_CAPITAL = 1000  # NAV-normalised so equity curves start at the same level
+    INITIAL_CAPITAL = 1000  # NAV start
 
     print(f'Backtest Configuration (tuned on validation):')
     print(f'  Confidence Threshold: {THRESHOLD}')
@@ -66,10 +66,10 @@ def run_enhanced_backtest():
         peak = INITIAL_CAPITAL
 
         for i in range(1, n):
-            # Use yesterday's prediction so there's no look-ahead
+            # one-day signal lag
             p = pred[i - 1]
 
-            # Widen the threshold when VIX is high
+            # widen threshold in high-VIX regimes
             v = vix[i-1]
             if v > VIX_HIGH:
                 eff_threshold = THRESHOLD * 3.0
@@ -78,7 +78,7 @@ def run_enhanced_backtest():
             else:
                 eff_threshold = THRESHOLD
 
-            # Long always, short only if enabled
+            # size the position
             denom = eff_threshold * 5 + 1e-9
             if USE_FRACTIONAL:
                 if p > eff_threshold:
@@ -95,13 +95,13 @@ def run_enhanced_backtest():
                 else:
                     position[i] = 0.0
 
-            # Cut exposure once drawdown crosses the limit
+            # taper on drawdown
             current_dd = (equity[i-1] - peak) / peak
             if current_dd < -DD_LIMIT:
                 severity = min((abs(current_dd) - DD_LIMIT) / DD_LIMIT, 1.0)
                 position[i] *= max(1.0 - severity, 0.0)
 
-            # P&L minus tx cost on the position change
+            # tx cost on position change
             pos_change = abs(position[i] - position[i-1])
             ret = position[i] * actual[i] - pos_change * TX_COST
             strat_rets[i] = ret
@@ -113,7 +113,7 @@ def run_enhanced_backtest():
         t_df['Strategy_Ret'] = strat_rets
         t_df['Equity'] = equity
 
-        # Per-stock metrics
+        # per-ticker stats
         stock_sharpe = calculate_sharpe(pd.Series(strat_rets))
         traded = t_df[t_df['Position'] > 0]
         hit_rate = (traded['Actual'] > 0).mean() if len(traded) > 0 else 0.0
@@ -134,7 +134,7 @@ def run_enhanced_backtest():
 
     processed_df = pd.concat(final_returns)
 
-    # Equal-weight basket across tickers
+    # equal-weight basket
     portfolio = processed_df.groupby('Date').agg({
         'Actual': 'mean',
         'Strategy_Ret': 'mean',
@@ -167,13 +167,13 @@ def run_enhanced_backtest():
     print(f'{"Hit Rate":<25} {"N/A":>15} {portfolio_hit:>14.1%}')
     print(f'{"Avg Exposure":<25} {"100%":>15} {avg_exposure:>14.1%}')
 
-    # Two figures for the chapter's subcaption layout
+    # plots
 
     plt.rcParams.update({'font.size': 11})
 
     os.makedirs('figures', exist_ok=True)
 
-    # Equity curves - shaded by which strategy is ahead
+    # equity curves
     fig, ax = plt.subplots(figsize=(7, 5))
     
     ax.plot(portfolio['Date'], portfolio['Market_Cum'],
@@ -211,7 +211,7 @@ def run_enhanced_backtest():
     plt.savefig('figures/equity_curves.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    # Drawdown profile - dotted line marks the circuit-breaker level
+    # drawdown plot
     fig, ax = plt.subplots(figsize=(7, 5))
     
     mkt_dd = (
@@ -260,7 +260,7 @@ def run_enhanced_backtest():
     plt.savefig('figures/drawdown_profiles.png', dpi=300, bbox_inches='tight')
     plt.close()
 
-    # Save metrics + summary so the chapter pulls from one source
+    # write metrics and summary
     os.makedirs('data/results', exist_ok=True)
     pd.DataFrame(per_stock_metrics).to_csv('data/results/per_stock_metrics.csv', index=False)
     portfolio.to_csv('data/results/portfolio_backtest.csv', index=False)

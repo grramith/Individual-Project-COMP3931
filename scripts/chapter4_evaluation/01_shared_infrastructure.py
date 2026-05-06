@@ -1,5 +1,4 @@
-# Phase 0 - shared infrastructure
-# One backtest engine + prediction loader so the rest of the chapter compares like with like
+# shared backtest + prediction loader for the chapter 4 scripts
 
 import os
 import json
@@ -13,7 +12,7 @@ import pickle
 
 warnings.filterwarnings("ignore")
 
-# Find the project root so this runs from any cwd (notebook subdir, scripts/, etc.)
+# walk up to find project root
 def _find_project_root():
     sentinel_dirs = {'data', 'scripts', 'models'}
     candidate = Path.cwd().resolve()
@@ -28,17 +27,17 @@ def _find_project_root():
 PROJECT_ROOT = _find_project_root()
 os.chdir(PROJECT_ROOT)
 print(f"Project root: {PROJECT_ROOT}")
-# Stop early if script 07 hasn't been run yet
+# needs script 07 to have run
 assert Path("data/results/best_ensemble_config.json").exists()
 EVAL_DIR = "data/results/evaluation"
 os.makedirs(EVAL_DIR, exist_ok=True)
 
 TRADING_DAYS = 252
-TX_COST_DEFAULT = 0.0005  # 5 bps - same as the existing backtester
+TX_COST_DEFAULT = 0.0005  # 5 bps
 INITIAL_CAPITAL = 1000.0
 
 
-# Shared backtest engine - every strategy in the chapter goes through this
+# single backtest engine for all chapter 4 strategies
 def run_backtest(
     preds_df,
     threshold=0.0,
@@ -78,7 +77,7 @@ def run_backtest(
             p = pred[i - 1]
             v = vix[i - 1]
 
-            # widen the threshold when VIX is high - cuts whipsaws
+            # widen threshold when VIX is high
             if use_vix_filter and use_threshold:
                 if v > vix_high:
                     eff = eff_threshold_base * 3.0
@@ -89,7 +88,7 @@ def run_backtest(
             else:
                 eff = eff_threshold_base
 
-            # fractional sizing scales with signal strength
+            # fractional sizing
             denom = eff * 5 + 1e-9
             if use_fractional and use_threshold:
                 if p > eff:
@@ -99,7 +98,7 @@ def run_backtest(
                 else:
                     position[i] = 0.0
             else:
-                # binary entry when threshold or fractional sizing is off
+                # binary entry
                 if p > eff:
                     position[i] = 1.0
                 elif allow_short and p < -eff:
@@ -107,14 +106,14 @@ def run_backtest(
                 else:
                     position[i] = 0.0
 
-            # cut exposure once drawdown goes past the limit
+            # taper on drawdown
             if use_taper:
                 current_dd = (equity[i - 1] - peak) / peak if peak > 0 else 0.0
                 if current_dd < -dd_limit:
                     severity = min((abs(current_dd) - dd_limit) / dd_limit, 1.0)
                     position[i] *= max(1.0 - severity, 0.0)
 
-            # P&L minus tx cost on the position change
+            # tx cost on position change
             pos_change = abs(position[i] - position[i - 1])
             ret = position[i] * actual[i] - pos_change * tx_cost
             strat_rets[i] = ret
@@ -131,7 +130,7 @@ def run_backtest(
 
     combined = pd.concat(per_ticker, ignore_index=True)
 
-    # Equal-weight basket across tickers per day
+    # equal-weight portfolio
     port = combined.groupby("Date").agg(
         Actual=("Actual", "mean"),
         Strategy_Ret=("Strategy_Ret", "mean"),
@@ -166,7 +165,7 @@ def run_backtest(
     }
 
 
-# Performance metrics, all annualised to 252 trading days
+# annualised metrics (252-day)
 def sharpe_annualised(rets, periods=TRADING_DAYS):
     rets = np.asarray(rets)
     if len(rets) == 0 or np.std(rets, ddof=1) == 0:
@@ -174,7 +173,7 @@ def sharpe_annualised(rets, periods=TRADING_DAYS):
     return (np.mean(rets) / np.std(rets, ddof=1)) * np.sqrt(periods)
 
 def sortino_annualised(rets, periods=TRADING_DAYS):
-    # only penalise downside vol
+    # downside vol only
     rets = np.asarray(rets)
     downside = rets[rets < 0]
     if len(downside) == 0 or np.std(downside, ddof=1) == 0:
@@ -195,13 +194,13 @@ def calmar_ratio(rets, equity, periods=TRADING_DAYS):
     return ann_ret / mdd
 
 
-# Build the wide predictions table keyed on (Date, Ticker)
+# wide predictions table on (Date, Ticker)
 def load_all_test_predictions():
     X_test = np.load("data/modeling/X_test.npy")
     y_test = np.load("data/modeling/y_test_returns.npy")
     test_meta = pd.read_csv("data/modeling/test_metadata.csv", parse_dates=["Date"])
 
-    # Load each baseline pkl and run it on the test set
+    # run each baseline on test
     baselines = {}
     model_files = {
         "Linear": "models/baselines/Linear_Regression.pkl",
@@ -211,17 +210,17 @@ def load_all_test_predictions():
     }
     for name, path in model_files.items():
         if not os.path.exists(path):
-            print(f"  [warn] missing {path} — {name} column will be NaN")
+            print(f"  [warn] missing {path}, {name} column will be NaN")
             baselines[name] = np.full(len(X_test), np.nan)
             continue
         try:
             baselines[name] = joblib.load(path).predict(X_test)
             print(f"  [ok]   loaded {name}")
         except Exception as e:
-            # Don't kill the whole pipeline if one pkl is broken
+            # skip a broken pkl
             print(f"  [warn] couldn't load {name} ({type(e).__name__})")
             print("         try re-running scripts/05_train_baseline_regressors.py")
-            print(f"         skipping {name} for now — it won’t appear in Table 4.1")
+            print(f"         skipping {name}, it won't appear in Table 4.1")
             baselines[name] = np.full(len(X_test), np.nan)
 
     preds = test_meta[["Date", "Ticker"]].copy()
@@ -229,14 +228,14 @@ def load_all_test_predictions():
     for name, arr in baselines.items():
         preds[f"Pred_{name}"] = arr
 
-    # HDE blended predictions plus the daily weights for each constituent
+    # HDE preds + daily weights
     hde = pd.read_csv("data/results/hde_final_results.csv", parse_dates=["Date"])
     hde_slim = hde[["Date", "Ticker", "Ensemble_Delta", "VIX_Value",
                     "Weight_RF", "Weight_GB", "Weight_LSTM"]].copy()
     hde_slim.rename(columns={"Ensemble_Delta": "Pred_HDE"}, inplace=True)
     preds = preds.merge(hde_slim, on=["Date", "Ticker"], how="left")
 
-    # LSTM preds live in a separate CSV (script 06)
+    # LSTM preds from script 06
     lstm_path = "data/results/lstm_predictions.csv"
     if os.path.exists(lstm_path):
         lstm = pd.read_csv(lstm_path, parse_dates=["Date"])
@@ -245,17 +244,17 @@ def load_all_test_predictions():
     else:
         preds["Pred_LSTM"] = np.nan
 
-    # Drop the HDE warm-up rows (NaN predictions)
+    # drop warm-up NaNs
     preds = preds.dropna(subset=["Pred_HDE"]).reset_index(drop=True)
     preds = preds.sort_values(["Ticker", "Date"]).reset_index(drop=True)
 
     print(f"Loaded {len(preds)} test observations across {preds['Ticker'].nunique()} tickers")
-    print(f"Date range: {preds['Date'].min().date()} → {preds['Date'].max().date()}")
+    print(f"Date range: {preds['Date'].min().date()} to {preds['Date'].max().date()}")
     print(f"Columns: {list(preds.columns)}")
     return preds
 
 
-# Same tuned HDE config gets applied to every strategy in the ladder
+# tuned HDE config used for every ladder strategy
 with open("data/results/best_ensemble_config.json") as f:
     HDE_CONFIG = json.load(f)
 
@@ -267,7 +266,7 @@ PREDS = load_all_test_predictions()
 PREDS.to_csv(f"{EVAL_DIR}/all_test_predictions.csv", index=False)
 print(f"\nsaved combined predictions to {EVAL_DIR}/all_test_predictions.csv")
 
-# Save shared state so the rest of the pipeline can pick it up
+# dump state for downstream phases
 with open(f"{EVAL_DIR}/_state_phase0.pkl", "wb") as f:
     pickle.dump({"PREDS": PREDS, "HDE_CONFIG": HDE_CONFIG}, f)
 print(f"saved phase-0 state to {EVAL_DIR}/_state_phase0.pkl")

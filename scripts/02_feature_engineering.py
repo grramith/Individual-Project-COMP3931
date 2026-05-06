@@ -4,14 +4,14 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# Configuration for the baseline macroeconomic indicators
+# config
 FRED_API_KEY = os.environ.get('FRED_API_KEY')
 OUTPUT_PATH = 'data/raw/macro_fred.csv'
 START_DATE = '2014-01-01'
-END_DATE = '2026-01-01' # Ensures data stops at 2025-12-31
+END_DATE = '2026-01-01' # cuts off at end of 2025
 
 
-# Macro indicators needed for the feature set
+# FRED series IDs
 MACRO_SERIES = {
     'fed_funds_rate': 'DFF',
     'us10y_yield': 'DGS10',
@@ -32,18 +32,17 @@ def collect_macro_data():
 
     for name, series_id in MACRO_SERIES.items():
         print(f"  - {name}")
-        # Coerce to numeric just in case FRED returns any string values
+        # force numeric
         s = fred.get_series(series_id, observation_start=START_DATE, observation_end=END_DATE)
         s = pd.to_numeric(s, errors='coerce')
         s.name = name
         macro_frames.append(s)
 
 
-     # CPI and unemployment are monthly — forward fill to match daily price data
+    # CPI and unemployment are monthly, ffill to daily
     macro_df = pd.concat(macro_frames, axis=1)
     macro_df.index.name = 'Date'
-    
-    # Forward fill monthly/quarterly data to daily frequency
+
     macro_df = macro_df.ffill()
 
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)

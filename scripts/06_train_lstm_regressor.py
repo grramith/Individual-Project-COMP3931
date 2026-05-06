@@ -25,9 +25,9 @@ class LSTMRegressor(nn.Module):
         self.fc = nn.Linear(hidden_size, 1)
     
     def forward(self, x):
-       # Use the final timestep representation for prediction
+        # take the last timestep
         lstm_out, _ = self.lstm(x)
-        # Use the last time step's output
+        # last hidden state per sequence
         last_hidden = lstm_out[:, -1, :]
         out = self.dropout(last_hidden)
         return self.fc(out).squeeze(-1)
@@ -36,7 +36,7 @@ def create_sequences_per_ticker(X, y, metadata, seq_len):
 
     sequences, targets, meta_rows = [], [], []
     
-    # Group by ticker
+    # one ticker at a time
     tickers = metadata['Ticker'].unique()
     
     for ticker in tickers:
@@ -45,7 +45,7 @@ def create_sequences_per_ticker(X, y, metadata, seq_len):
         y_tick = y[mask]
         meta_tick = metadata[mask].reset_index(drop=True)
         
-        # Create sequences within this ticker
+        # rolling windows inside this ticker only
         for i in range(seq_len, len(X_tick)):
             sequences.append(X_tick[i - seq_len:i])
             targets.append(y_tick[i])
@@ -62,7 +62,7 @@ def create_sequences_per_ticker(X, y, metadata, seq_len):
 
 
 def train_lstm():
-    # Load scaled inputs and regression targets
+    # load X and y
     X_train = np.load("data/modeling/X_train.npy")
     X_val = np.load("data/modeling/X_val.npy")
     X_test = np.load("data/modeling/X_test.npy")
@@ -70,12 +70,12 @@ def train_lstm():
     y_val = np.load("data/modeling/y_val_returns.npy")
     y_test = np.load("data/modeling/y_test_returns.npy")
     
-   # Load metadata so sequence construction can stay ticker-specific
+    # need ticker labels for per-ticker sequencing
     meta_train = pd.read_csv("data/modeling/train_metadata.csv")
     meta_val = pd.read_csv("data/modeling/val_metadata.csv")
     meta_test = pd.read_csv("data/modeling/test_metadata.csv")
     
-     # Use the best available device on the current machine (In this we don't actually use CUDA since all the code has been ran on Apple Silicon, but this is future-proofing for anyone who might want to run it on a GPU and for good coding practice))
+    # pick the best available device
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -84,7 +84,7 @@ def train_lstm():
         device = torch.device("cpu")
     print(f"Using device: {device}")
     
-    # Keep the search space small and practical
+    # small grid
     hyperparam_configs = [
         {"seq_len": 10, "hidden_size": 64, "lr": 0.001, "dropout": 0.3},
         {"seq_len": 20, "hidden_size": 64, "lr": 0.001, "dropout": 0.3},
@@ -109,7 +109,7 @@ def train_lstm():
         seq_len = cfg["seq_len"]
         print(f"\nConfig: {cfg}")
         
-        # Build rolling windows separately for each ticker
+        # per-ticker sequences
         X_tr_seq, y_tr_seq, _ = create_sequences_per_ticker(
             X_train, y_train, meta_train, seq_len
         )
@@ -121,7 +121,7 @@ def train_lstm():
             print(f"  Skipping: insufficient data for seq_len={seq_len}")
             continue
         
-         # Convert sequence arrays into PyTorch datasets
+        # wrap in tensors
         train_dataset = TensorDataset(
             torch.FloatTensor(X_tr_seq),
             torch.FloatTensor(y_tr_seq)
@@ -134,7 +134,7 @@ def train_lstm():
         train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
         
-        # Initialise model
+        # build the model
         input_size = X_train.shape[1]
         model = LSTMRegressor(
             input_size=input_size,
@@ -146,13 +146,13 @@ def train_lstm():
         optimiser = torch.optim.Adam(model.parameters(), lr=cfg["lr"])
         criterion = nn.MSELoss()
         
-        # Training with early stopping
+        # train with early stopping
         best_epoch_val_loss = float('inf')
         patience_counter = 0
         best_state = None
         
         for epoch in range(NUM_EPOCHS):
-            # Training step
+            # train
             model.train()
             train_loss = 0.0
             for X_batch, y_batch in train_loader:
@@ -166,7 +166,7 @@ def train_lstm():
                 train_loss += loss.item() * len(X_batch)
             train_loss /= len(train_dataset)
             
-            # Training step
+            # validate
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
@@ -177,7 +177,7 @@ def train_lstm():
                     val_loss += loss.item() * len(X_batch)
             val_loss /= len(val_dataset)
             
-            # Keep the best validation checkpoint seen so far
+            # save best so far
             if val_loss < best_epoch_val_loss:
                 best_epoch_val_loss = val_loss
                 best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
@@ -188,7 +188,7 @@ def train_lstm():
                     print(f"  Early stopping at epoch {epoch+1}")
                     break
             
-            # Print progress every 10 epochs so training is easier to track
+            # log every 10 epochs
             if (epoch + 1) % 10 == 0:
                 print(f"  Epoch {epoch+1}/{NUM_EPOCHS} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
         
@@ -200,14 +200,14 @@ def train_lstm():
         
         print(f"  >> Best Val Loss: {best_epoch_val_loss:.6f}")
         
-        # Update the overall best configuration if this run improved validation loss
+        # track overall best
         if best_epoch_val_loss < best_val_loss:
             best_val_loss = best_epoch_val_loss
             best_config = cfg
             best_model_state = best_state
 
     print(f"LSTM tuning completed in {(time.time() - start_lstm) / 60:.1f} minutes")
-    # Stop early if no valid configuration produced a usable model
+    # bail if nothing trained
     if best_config is None:
         print("ERROR: No valid configuration found!")
         return None, None
@@ -216,7 +216,7 @@ def train_lstm():
     print(f"Best LSTM Config: {best_config}")
     print(f"Best Val Loss: {best_val_loss:.6f}")
     
-    # Rebuild the best model and use it for final test inference
+    # rebuild best model for test
     seq_len = best_config["seq_len"]
     input_size = X_train.shape[1]
     
@@ -228,7 +228,7 @@ def train_lstm():
     ).to(device)
     final_model.load_state_dict(best_model_state)
     
-    # Build ticker-safe test sequences with the selected sequence length
+    # test sequences
     X_test_seq, y_test_seq, meta_test_seq = create_sequences_per_ticker(
         X_test, y_test, meta_test, seq_len
     )
@@ -239,7 +239,7 @@ def train_lstm():
             torch.FloatTensor(X_test_seq).to(device)
         ).cpu().numpy()
     
-    # Report final predictive and directional performance on the test set
+    # test metrics
     test_mae = np.mean(np.abs(y_test_seq - test_preds))
     test_dir_acc = np.mean((test_preds > 0) == (y_test_seq > 0))
     
@@ -248,7 +248,7 @@ def train_lstm():
     print(f"  Directional Accuracy: {test_dir_acc:.2%}")
     print(f"  Test sequences: {len(test_preds)} (from {len(y_test)} raw test rows)")
 
-    # Create output folders before saving model artefacts and prediction files
+    # make output dirs
     os.makedirs("models/lstm", exist_ok=True)
     os.makedirs("data/results", exist_ok=True)
     
@@ -257,13 +257,13 @@ def train_lstm():
     with open("models/lstm/best_config.json", "w") as f:
         json.dump(best_config, f, indent=2)
     
-    # Save predictions with Date and Ticker so they can be merged later without misalignment
+    # keep Date and Ticker for later joins
     lstm_results = meta_test_seq.copy()
     lstm_results['Pred_LSTM'] = test_preds
     lstm_results['Actual'] = y_test_seq
     lstm_results.to_csv("data/results/lstm_predictions.csv", index=False)
     
-    # Save the full tuning history for later analysis
+    # dump tuning log
     pd.DataFrame(tuning_log).to_csv("data/results/lstm_tuning_log.csv", index=False)
     
     print(f"\nLSTM predictions saved with Date+Ticker alignment to data/results/lstm_predictions.csv")
