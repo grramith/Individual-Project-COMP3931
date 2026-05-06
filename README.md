@@ -150,6 +150,7 @@ FRED_API_KEY=your_fred_api_key_here
 The key is only needed for `scripts/02_feature_engineering.py`. This script downloads the macroeconomic variables used in the project, including the Federal Funds Rate, 10-year Treasury yield, VIX, CPI, and unemployment rate.
 
 If data/raw/macro_fred.csv already exists from a previous run, you can skip script 02 and continue from script 03.
+
 ---
 
 ## Running the pipeline
