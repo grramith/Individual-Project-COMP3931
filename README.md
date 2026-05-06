@@ -111,7 +111,83 @@ The main finding is that adaptive weighting did not provide a reliable improveme
 The experiments for this project were run on a Mac with an Apple M2 chip and 16 GB of memory, running macOS 26.3.1. The LSTM training loop used MPS acceleration where available, with CPU fallback where needed.
 
 ---
+## Project Structure
 
+```
+.
+├── config.py                         # Shared paths, tickers, dates, and random seed
+├── main.py                           # Runs the main pipeline from scripts 01 to 07
+├── run_evaluation.py                 # Runs the Chapter 4 evaluation scripts
+├── README.md                         # Project overview and setup guide
+├── requirements.txt                  # Python package requirements
+├── .env                              # Local only. Stores FRED_API_KEY.
+├── data/
+│   ├── raw/                          # Raw price and macro data
+│   │   ├── prices.csv
+│   │   └── macro_fred.csv
+│   ├── processed/                    # Cleaned feature dataset
+│   │   └── master_dataset.csv
+│   ├── modeling/                     # Arrays and metadata used for training
+│   │   ├── feature_names.csv
+│   │   ├── scaler.pkl
+│   │   ├── train_metadata.csv
+│   │   ├── val_metadata.csv
+│   │   ├── test_metadata.csv
+│   │   ├── X_train.npy
+│   │   ├── X_val.npy
+│   │   ├── X_test.npy
+│   │   ├── y_train_returns.npy
+│   │   ├── y_val_returns.npy
+│   │   └── y_test_returns.npy
+│   └── results/
+│       ├── hde_final_results.csv     # Final HDE predictions and weights
+│       ├── backtest_summary.json     # Main strategy performance summary
+│       ├── best_ensemble_config.json # Best validation-tuned HDE settings
+│       ├── baseline_regression_results.csv
+│       ├── ensemble_tuning_log.csv
+│       ├── hyperparameter_tuning_log.csv
+│       ├── lstm_predictions.csv
+│       ├── lstm_tuning_log.csv
+│       ├── per_stock_metrics.csv
+│       ├── portfolio_backtest.csv
+│       ├── rolling_window_evaluation.csv
+│       └── evaluation/               # Chapter 4 tables, figures, and summaries
+├── models/
+│   ├── baselines/                    # Saved baseline regression models
+│   │   ├── Linear_Regression.pkl
+│   │   ├── Ridge_Regression.pkl
+│   │   ├── RF_Regressor.pkl
+│   │   └── GB_Regressor.pkl
+│   └── lstm/                         # Saved LSTM model and selected config
+│       ├── best_lstm.pth
+│       └── best_config.json
+├── scripts/
+│   ├── 01_data_collection.py         # Downloads adjusted price data
+│   ├── 02_feature_engineering.py     # Fetches FRED data and macro variables
+│   ├── 03_build_master_dataset.py    # Builds the final feature dataset
+│   ├── 04_regression_data_preprocessing.py # Splits and scales the data
+│   ├── 05_train_baseline_regressors.py     # Trains Linear, Ridge, RF, and GB
+│   ├── 06_train_lstm_regressor.py           # Trains and tunes the LSTM model
+│   ├── 07_build_enhanced_hde.py             # Builds and evaluates the HDE
+│   ├── 07.1_sensitivity.py                  # Optional sensitivity analysis
+│   └── chapter4_evaluation/
+│       ├── 01_shared_infrastructure.py      # Shared backtest and helper code
+│       ├── 02_inferential_toolbox.py        # Bootstrap, DM, PT, and Sharpe tests
+│       ├── 03_predictive_performance.py     # Predictive performance tables
+│       ├── 04_weight_drawdown_diagnostics.py
+│       ├── 05_regime_robustness_summary.py
+│       └── 06_enhanced_backtest.py
+└── tests/
+    ├── test_backtest.py              # Backtest and trading-rule checks
+    ├── test_ensemble.py              # Ensemble weighting and bias correction tests
+    ├── test_features.py              # Technical indicator tests
+    ├── test_integration.py           # End-to-end output checks
+    ├── test_metrics.py               # Evaluation metric tests
+    ├── test_models.py                # Model shape and prediction checks
+    └── test_preprocessing.py         # Split, scaling, and missing-value tests
+```
+
+---
 ## Setup
 
 ### Prerequisites
@@ -214,83 +290,6 @@ Outputs are saved in `data/results/`. The `evaluation/` folder contains the Chap
 
 Best validation configuration: `window=10`, `decay=0.9`, `threshold=0.0005`, `VIX_low=16.6`, `VIX_high=22.55`.
 
-## Project Structure
-
-```
-.
-├── config.py                         # Shared paths, tickers, dates, and random seed
-├── main.py                           # Runs the main pipeline from scripts 01 to 07
-├── run_evaluation.py                 # Runs the Chapter 4 evaluation scripts
-├── README.md                         # Project overview and setup guide
-├── requirements.txt                  # Python package requirements
-├── .env                              # Local only. Stores FRED_API_KEY.
-├── data/
-│   ├── raw/                          # Raw price and macro data
-│   │   ├── prices.csv
-│   │   └── macro_fred.csv
-│   ├── processed/                    # Cleaned feature dataset
-│   │   └── master_dataset.csv
-│   ├── modeling/                     # Arrays and metadata used for training
-│   │   ├── feature_names.csv
-│   │   ├── scaler.pkl
-│   │   ├── train_metadata.csv
-│   │   ├── val_metadata.csv
-│   │   ├── test_metadata.csv
-│   │   ├── X_train.npy
-│   │   ├── X_val.npy
-│   │   ├── X_test.npy
-│   │   ├── y_train_returns.npy
-│   │   ├── y_val_returns.npy
-│   │   └── y_test_returns.npy
-│   └── results/
-│       ├── hde_final_results.csv     # Final HDE predictions and weights
-│       ├── backtest_summary.json     # Main strategy performance summary
-│       ├── best_ensemble_config.json # Best validation-tuned HDE settings
-│       ├── baseline_regression_results.csv
-│       ├── ensemble_tuning_log.csv
-│       ├── hyperparameter_tuning_log.csv
-│       ├── lstm_predictions.csv
-│       ├── lstm_tuning_log.csv
-│       ├── per_stock_metrics.csv
-│       ├── portfolio_backtest.csv
-│       ├── rolling_window_evaluation.csv
-│       └── evaluation/               # Chapter 4 tables, figures, and summaries
-├── models/
-│   ├── baselines/                    # Saved baseline regression models
-│   │   ├── Linear_Regression.pkl
-│   │   ├── Ridge_Regression.pkl
-│   │   ├── RF_Regressor.pkl
-│   │   └── GB_Regressor.pkl
-│   └── lstm/                         # Saved LSTM model and selected config
-│       ├── best_lstm.pth
-│       └── best_config.json
-├── scripts/
-│   ├── 01_data_collection.py         # Downloads adjusted price data
-│   ├── 02_feature_engineering.py     # Fetches FRED data and macro variables
-│   ├── 03_build_master_dataset.py    # Builds the final feature dataset
-│   ├── 04_regression_data_preprocessing.py # Splits and scales the data
-│   ├── 05_train_baseline_regressors.py     # Trains Linear, Ridge, RF, and GB
-│   ├── 06_train_lstm_regressor.py           # Trains and tunes the LSTM model
-│   ├── 07_build_enhanced_hde.py             # Builds and evaluates the HDE
-│   ├── 07.1_sensitivity.py                  # Optional sensitivity analysis
-│   └── chapter4_evaluation/
-│       ├── 01_shared_infrastructure.py      # Shared backtest and helper code
-│       ├── 02_inferential_toolbox.py        # Bootstrap, DM, PT, and Sharpe tests
-│       ├── 03_predictive_performance.py     # Predictive performance tables
-│       ├── 04_weight_drawdown_diagnostics.py
-│       ├── 05_regime_robustness_summary.py
-│       └── 06_enhanced_backtest.py
-└── tests/
-    ├── test_backtest.py              # Backtest and trading-rule checks
-    ├── test_ensemble.py              # Ensemble weighting and bias correction tests
-    ├── test_features.py              # Technical indicator tests
-    ├── test_integration.py           # End-to-end output checks
-    ├── test_metrics.py               # Evaluation metric tests
-    ├── test_models.py                # Model shape and prediction checks
-    └── test_preprocessing.py         # Split, scaling, and missing-value tests
-```
-
----
 
 ## Testing
 
